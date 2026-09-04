@@ -1,11 +1,12 @@
 import { BaseTranslationProvider } from './translation-provider';
-import { TranslationRequest, TranslationResponse, ProviderConfig, ConnectionTestResult } from '../types';
+import { TranslationRequest, TranslationResponse, ProviderConfig, ConnectionTestResult, ModelInfo } from '../types';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const AVAILABLE_MODELS = [
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
-  'gemini-1.0-pro',
+
+const FALLBACK_MODELS: ModelInfo[] = [
+  { name: 'gemini-1.5-flash', displayName: 'Gemini 1.5 Flash (Fast, Free)' },
+  { name: 'gemini-1.5-pro', displayName: 'Gemini 1.5 Pro (Higher Quality)' },
+  { name: 'gemini-1.0-pro', displayName: 'Gemini 1.0 Pro' },
 ];
 
 export class GeminiProvider extends BaseTranslationProvider {
@@ -13,6 +14,8 @@ export class GeminiProvider extends BaseTranslationProvider {
   
   private apiKey: string;
   private model: string;
+  private cachedModels: ModelInfo[] = [];
+  private modelsFetched = false;
   
   constructor(apiKey: string, model: string = 'gemini-1.5-flash') {
     super();
@@ -23,10 +26,77 @@ export class GeminiProvider extends BaseTranslationProvider {
   setConfig(apiKey: string, model: string): void {
     this.apiKey = apiKey;
     this.model = model;
+    this.modelsFetched = false;
+    this.cachedModels = [];
   }
   
   getModels(): string[] {
-    return AVAILABLE_MODELS;
+    if (this.cachedModels.length > 0) {
+      return this.cachedModels.map(m => m.name);
+    }
+    return FALLBACK_MODELS.map(m => m.name);
+  }
+  
+  getCachedModels(): ModelInfo[] {
+    if (this.cachedModels.length > 0) {
+      return this.cachedModels;
+    }
+    return FALLBACK_MODELS;
+  }
+  
+  async listModels(apiKey: string): Promise<ModelInfo[]> {
+    try {
+      const url = `${GEMINI_API_BASE}?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
+        throw new Error(`Failed to list models: ${errorMessage}`);
+      }
+      
+      const data = await response.json();
+      const models: ModelInfo[] = (data.models || [])
+        .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
+        .map((m: any) => ({
+          name: m.name.replace('models/', ''),
+          displayName: m.displayName || m.name.replace('models/', ''),
+          description: m.description,
+          supportedMethods: m.supportedGenerationMethods,
+          inputTokenLimit: m.inputTokenLimit,
+          outputTokenLimit: m.outputTokenLimit,
+        }))
+        .filter((m: ModelInfo) => 
+          m.name.includes('gemini') && 
+          (m.name.includes('1.5') || m.name.includes('1.0'))
+        )
+        .sort((a: ModelInfo, b: ModelInfo) => {
+          const order: Record<string, number> = {
+            'gemini-1.5-flash': 1,
+            'gemini-1.5-pro': 2,
+            'gemini-1.0-pro': 3,
+          };
+          return (order[a.name] || 99) - (order[b.name] || 99);
+        });
+      
+      if (models.length === 0) {
+        return FALLBACK_MODELS;
+      }
+      
+      return models;
+    } catch (error) {
+      console.warn('Failed to fetch models from API, using fallback:', error);
+      return FALLBACK_MODELS;
+    }
+  }
+  
+  async fetchAndCacheModels(apiKey: string): Promise<ModelInfo[]> {
+    this.cachedModels = await this.listModels(apiKey);
+    this.modelsFetched = true;
+    return this.cachedModels;
   }
   
   async testConnection(config: ProviderConfig): Promise<ConnectionTestResult> {
@@ -55,7 +125,7 @@ export class GeminiProvider extends BaseTranslationProvider {
           if (errorMessage.includes('API key')) {
             userMessage = 'Invalid API key format';
           } else if (errorMessage.includes('model')) {
-            userMessage = 'Unsupported model';
+            userMessage = 'Model not supported';
           }
         } else if (response.status === 401) {
           userMessage = 'Invalid or expired API key';
@@ -78,7 +148,13 @@ export class GeminiProvider extends BaseTranslationProvider {
         };
       }
       
-      return { success: true, message: 'Connection successful!' };
+      const models = await this.fetchAndCacheModels(config.apiKey);
+      
+      return { 
+        success: true, 
+        message: 'Connection successful!',
+        availableModels: models
+      };
     } catch (error) {
       if (error instanceof TypeError && error.message.includes('fetch')) {
         return { 

@@ -109,13 +109,24 @@ export interface TranslationProvider {
   name: TranslationProviderType;
   translate(request: TranslationRequest): Promise<TranslationResponse>;
   testConnection(config: ProviderConfig): Promise<ConnectionTestResult>;
+  listModels(apiKey: string): Promise<ModelInfo[]>;
   getModels(): string[];
+}
+
+export interface ModelInfo {
+  name: string;
+  displayName: string;
+  description?: string;
+  supportedMethods?: string[];
+  inputTokenLimit?: number;
+  outputTokenLimit?: number;
 }
 
 export interface ConnectionTestResult {
   success: boolean;
   message: string;
   details?: string;
+  availableModels?: ModelInfo[];
 }
 
 export interface PrefetchStrategy {
