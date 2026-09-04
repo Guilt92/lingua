@@ -1,10 +1,10 @@
-import { TranslationProvider, TranslationRequest, TranslationResponse, ProviderConfig } from '../types';
+import { TranslationProvider, TranslationRequest, TranslationResponse, ProviderConfig, ConnectionTestResult } from '../types';
 
 export abstract class BaseTranslationProvider implements TranslationProvider {
   abstract name: 'gemini';
   
   abstract translate(request: TranslationRequest): Promise<TranslationResponse>;
-  abstract testConnection(config: ProviderConfig): Promise<boolean>;
+  abstract testConnection(config: ProviderConfig): Promise<ConnectionTestResult>;
   abstract getModels(): string[];
   
   protected buildPrompt(request: TranslationRequest): string {

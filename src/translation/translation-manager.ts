@@ -1,5 +1,5 @@
 import { TranslationProvider } from '../types';
-import { TranslationRequest, TranslationResponse, TranslationUnit, PrefetchStrategy } from '../types';
+import { TranslationRequest, TranslationResponse, TranslationUnit, PrefetchStrategy, ConnectionTestResult } from '../types';
 import { translationCache } from './translation-cache';
 import { GeminiProvider } from './gemini-provider';
 import { getSettings } from '../storage/settings';
@@ -223,7 +223,7 @@ export class TranslationManager {
     return this.provider !== null;
   }
   
-  async testProvider(apiKey: string, model: string): Promise<boolean> {
+  async testProvider(apiKey: string, model: string): Promise<ConnectionTestResult> {
     const provider = new GeminiProvider(apiKey, model);
     return provider.testConnection({ apiKey, model });
   }

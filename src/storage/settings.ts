@@ -1,4 +1,4 @@
-import { Settings, TranslationSettings, DisplaySettings } from '../types';
+import { Settings, TranslationSettings, DisplaySettings, UISettings, ThemeMode } from '../types';
 
 const DEFAULT_TRANSLATION_SETTINGS: TranslationSettings = {
   apiKey: '',
@@ -15,9 +15,14 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   enabled: true,
 };
 
+const DEFAULT_UI_SETTINGS: UISettings = {
+  theme: 'system',
+};
+
 export const DEFAULT_SETTINGS: Settings = {
   translation: DEFAULT_TRANSLATION_SETTINGS,
   display: DEFAULT_DISPLAY_SETTINGS,
+  ui: DEFAULT_UI_SETTINGS,
 };
 
 const SETTINGS_KEY = 'lingua_settings';
@@ -70,6 +75,33 @@ export async function saveDisplaySettings(settings: Partial<DisplaySettings>): P
       chrome.storage.sync.set({ [SETTINGS_KEY]: updated }, () => resolve());
     });
   });
+}
+
+export async function saveUISettings(settings: Partial<UISettings>): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(SETTINGS_KEY, (result) => {
+      const current = result[SETTINGS_KEY] || DEFAULT_SETTINGS;
+      const updated = {
+        ...current,
+        ui: { ...current.ui, ...settings },
+      };
+      chrome.storage.sync.set({ [SETTINGS_KEY]: updated }, () => resolve());
+    });
+  });
+}
+
+export function getSystemTheme(): 'light' | 'dark' {
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return 'light';
+}
+
+export function getEffectiveTheme(themeMode: ThemeMode): 'light' | 'dark' {
+  if (themeMode === 'system') {
+    return getSystemTheme();
+  }
+  return themeMode;
 }
 
 export async function getCache(): Promise<Record<string, { targetText: string; timestamp: number }>> {

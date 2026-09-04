@@ -1,5 +1,5 @@
 import { BaseTranslationProvider } from './translation-provider';
-import { TranslationRequest, TranslationResponse, ProviderConfig } from '../types';
+import { TranslationRequest, TranslationResponse, ProviderConfig, ConnectionTestResult } from '../types';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const AVAILABLE_MODELS = [
@@ -29,7 +29,7 @@ export class GeminiProvider extends BaseTranslationProvider {
     return AVAILABLE_MODELS;
   }
   
-  async testConnection(config: ProviderConfig): Promise<boolean> {
+  async testConnection(config: ProviderConfig): Promise<ConnectionTestResult> {
     try {
       const url = `${GEMINI_API_BASE}/${config.model}:generateContent?key=${config.apiKey}`;
       const response = await fetch(url, {
@@ -40,9 +40,58 @@ export class GeminiProvider extends BaseTranslationProvider {
           generationConfig: { maxOutputTokens: 10 },
         }),
       });
-      return response.ok;
-    } catch {
-      return false;
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
+        const errorCode = errorData.error?.code;
+        const errorStatus = errorData.error?.status;
+        
+        let userMessage = 'Connection failed';
+        let details = errorMessage;
+        
+        if (response.status === 400) {
+          userMessage = 'Invalid request';
+          if (errorMessage.includes('API key')) {
+            userMessage = 'Invalid API key format';
+          } else if (errorMessage.includes('model')) {
+            userMessage = 'Unsupported model';
+          }
+        } else if (response.status === 401) {
+          userMessage = 'Invalid or expired API key';
+        } else if (response.status === 403) {
+          userMessage = 'API key lacks permissions';
+        } else if (response.status === 404) {
+          userMessage = 'Model not found';
+        } else if (response.status === 429) {
+          userMessage = 'Rate limit exceeded';
+          details = 'Too many requests. Please wait a moment and try again.';
+        } else if (response.status >= 500) {
+          userMessage = 'Gemini server error';
+          details = 'The service is temporarily unavailable. Please try again later.';
+        }
+        
+        return { 
+          success: false, 
+          message: userMessage,
+          details: `${details} (${errorStatus || errorCode || response.status})`
+        };
+      }
+      
+      return { success: true, message: 'Connection successful!' };
+    } catch (error) {
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        return { 
+          success: false, 
+          message: 'Network error', 
+          details: 'Unable to reach Gemini API. Check your internet connection.' 
+        };
+      }
+      return { 
+        success: false, 
+        message: 'Connection failed', 
+        details: error instanceof Error ? error.message : 'Unknown error' 
+      };
     }
   }
   

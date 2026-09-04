@@ -13,9 +13,16 @@ export interface DisplaySettings {
   enabled: boolean;
 }
 
+export type ThemeMode = 'light' | 'dark' | 'system';
+
+export interface UISettings {
+  theme: ThemeMode;
+}
+
 export interface Settings {
   translation: TranslationSettings;
   display: DisplaySettings;
+  ui: UISettings;
 }
 
 export interface TextBlock {
@@ -101,8 +108,14 @@ export type TranslationProviderType = 'gemini';
 export interface TranslationProvider {
   name: TranslationProviderType;
   translate(request: TranslationRequest): Promise<TranslationResponse>;
-  testConnection(config: ProviderConfig): Promise<boolean>;
+  testConnection(config: ProviderConfig): Promise<ConnectionTestResult>;
   getModels(): string[];
+}
+
+export interface ConnectionTestResult {
+  success: boolean;
+  message: string;
+  details?: string;
 }
 
 export interface PrefetchStrategy {
