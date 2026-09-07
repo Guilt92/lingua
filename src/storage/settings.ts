@@ -2,7 +2,7 @@ import { Settings, TranslationSettings, DisplaySettings, UISettings, ThemeMode }
 
 const DEFAULT_TRANSLATION_SETTINGS: TranslationSettings = {
   apiKey: '',
-  model: 'gemini-1.5-flash',
+  model: '',
   sourceLanguage: 'en',
   targetLanguage: 'fa',
   mode: 'technical',

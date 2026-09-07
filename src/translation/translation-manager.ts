@@ -225,7 +225,13 @@ export class TranslationManager {
   
   async testProvider(apiKey: string, model: string): Promise<ConnectionTestResult> {
     const provider = new GeminiProvider(apiKey, model);
-    return provider.testConnection({ apiKey, model });
+    const result = await provider.testConnection({ apiKey, model });
+    
+    if (result.success) {
+      this.provider = provider;
+    }
+    
+    return result;
   }
 }
 

@@ -1,15 +1,9 @@
 import { PDFDocument, PageContent, TextBlock, TextLine } from '../types';
-import { pdfDetector } from './pdf-detector';
-
-interface PDFTextLayer {
-  pageNumber: number;
-  viewport: { width: number; height: number; scale: number };
-  textDivs: HTMLDivElement[];
-}
+import { pdfDetector, PDFViewerInfo } from './pdf-detector';
 
 export class PDFReader {
   private currentDocument: PDFDocument | null = null;
-  private textLayers: Map<number, PDFTextLayer> = new Map();
+  private textLayers: Map<number, { pageNumber: number; textDivs: HTMLDivElement[] }> = new Map();
   private pageChangeCallbacks: Set<(page: number) => void> = new Set();
   private scrollCallbacks: Set<() => void> = new Set();
   private observer: MutationObserver | null = null;
@@ -46,14 +40,40 @@ export class PDFReader {
   }
   
   private isPDFViewerReady(): boolean {
-    const viewer = document.querySelector('#viewer, .pdfViewer, .pdf-page');
-    return !!viewer;
+    // Our custom viewer uses .page-container
+    const customViewer = document.querySelector('.page-container');
+    if (customViewer) return true;
+    
+    // Chrome PDF viewer uses #viewerContainer or #viewer
+    const chromeViewer = document.querySelector('#viewerContainer, #viewer, .pdfViewer, .pdf-page');
+    return !!chromeViewer;
   }
   
   private async extractDocument(): Promise<void> {
     if (!this.currentDocument) return;
     
-    const pages = document.querySelectorAll('.page, [data-page-number], .pdf-page');
+    const info = pdfDetector.getCurrentInfo();
+    
+    // Our custom viewer
+    if (info.viewerType === 'custom') {
+      await this.extractFromCustomViewer();
+      return;
+    }
+    
+    // Chrome's PDF viewer
+    if (info.viewerType === 'pdfjs') {
+      await this.extractFromChromePdfViewer();
+      return;
+    }
+    
+    // Standard PDF pages
+    await this.extractFromStandardPage();
+  }
+  
+  private async extractFromCustomViewer(): Promise<void> {
+    if (!this.currentDocument) return;
+    
+    const pages = document.querySelectorAll('.page-container[data-page-number]');
     let pageCount = 0;
     let hasExtractableText = false;
     
@@ -61,7 +81,7 @@ export class PDFReader {
       const pageNumber = this.getPageNumber(pageEl);
       if (pageNumber === null) continue;
       
-      const pageContent = await this.extractPage(pageEl, pageNumber);
+      const pageContent = this.extractFromPageContainer(pageEl as HTMLElement, pageNumber);
       if (pageContent.textBlocks.length > 0) {
         hasExtractableText = true;
       }
@@ -74,14 +94,103 @@ export class PDFReader {
     this.currentDocument.isScanned = !hasExtractableText;
   }
   
-  private getPageNumber(pageEl: Element): number | null {
-    const pageNum = pageEl.getAttribute('data-page-number') || 
-                    pageEl.getAttribute('page-number') ||
-                    pageEl.id.match(/page[_-]?(\d+)/i)?.[1];
-    return pageNum ? parseInt(pageNum, 10) : null;
+  private extractFromPageContainer(pageEl: HTMLElement, pageNumber: number): PageContent {
+    const textBlocks: TextBlock[] = [];
+    const textLayer = pageEl.querySelector('.text-layer');
+    
+    if (textLayer) {
+      const spans = textLayer.querySelectorAll('span');
+      let blockId = 0;
+      
+      for (const span of Array.from(spans)) {
+        const text = span.textContent?.trim();
+        if (!text || text.length < 2) continue;
+        
+        const rect = span.getBoundingClientRect();
+        const pageRect = pageEl.getBoundingClientRect();
+        
+        const lines: TextLine[] = [{
+          text,
+          bbox: {
+            x: rect.left - pageRect.left,
+            y: rect.top - pageRect.top,
+            width: rect.width,
+            height: rect.height,
+          },
+        }];
+        
+        textBlocks.push({
+          id: `block_${pageNumber}_${blockId++}`,
+          pageNumber,
+          text,
+          bbox: {
+            x: rect.left - pageRect.left,
+            y: rect.top - pageRect.top,
+            width: rect.width,
+            height: rect.height,
+          },
+          lines,
+        });
+      }
+    }
+    
+    return {
+      pageNumber,
+      viewport: { width: pageEl.offsetWidth, height: pageEl.offsetHeight, scale: 1 },
+      textBlocks,
+    };
   }
   
-  private async extractPage(pageEl: Element, pageNumber: number): Promise<PageContent> {
+  private async extractFromChromePdfViewer(): Promise<void> {
+    if (!this.currentDocument) return;
+    
+    const scrollContainer = document.querySelector('#viewerContainer');
+    const pages = document.querySelectorAll('.page[data-page-number], [data-page-number], .pdf-page');
+    let pageCount = 0;
+    let hasExtractableText = false;
+    
+    for (const pageEl of Array.from(pages)) {
+      const pageNumber = this.getPageNumber(pageEl);
+      if (pageNumber === null) continue;
+      
+      const pageContent = this.extractFromPageElement(pageEl, pageNumber);
+      if (pageContent.textBlocks.length > 0) {
+        hasExtractableText = true;
+      }
+      
+      this.currentDocument.pages.set(pageNumber, pageContent);
+      pageCount = Math.max(pageCount, pageNumber);
+    }
+    
+    this.currentDocument.pageCount = pageCount;
+    this.currentDocument.isScanned = !hasExtractableText;
+  }
+  
+  private async extractFromStandardPage(): Promise<void> {
+    if (!this.currentDocument) return;
+    
+    const pages = document.querySelectorAll('.page, [data-page-number], .pdf-page');
+    let pageCount = 0;
+    let hasExtractableText = false;
+    
+    for (const pageEl of Array.from(pages)) {
+      const pageNumber = this.getPageNumber(pageEl);
+      if (pageNumber === null) continue;
+      
+      const pageContent = this.extractFromPageElement(pageEl, pageNumber);
+      if (pageContent.textBlocks.length > 0) {
+        hasExtractableText = true;
+      }
+      
+      this.currentDocument.pages.set(pageNumber, pageContent);
+      pageCount = Math.max(pageCount, pageNumber);
+    }
+    
+    this.currentDocument.pageCount = pageCount;
+    this.currentDocument.isScanned = !hasExtractableText;
+  }
+  
+  private extractFromPageElement(pageEl: Element, pageNumber: number): PageContent {
     const viewport = this.getViewport(pageEl);
     const textBlocks: TextBlock[] = [];
     
@@ -139,11 +248,17 @@ export class PDFReader {
     
     this.textLayers.set(pageNumber, {
       pageNumber,
-      viewport,
       textDivs: Array.from(pageEl.querySelectorAll('.textLayer div, .textLayer span')) as HTMLDivElement[],
     });
     
     return { pageNumber, viewport, textBlocks };
+  }
+  
+  private getPageNumber(pageEl: Element): number | null {
+    const pageNum = pageEl.getAttribute('data-page-number') || 
+                    pageEl.getAttribute('page-number') ||
+                    pageEl.id.match(/page[_-]?(\d+)/i)?.[1];
+    return pageNum ? parseInt(pageNum, 10) : null;
   }
   
   private getViewport(pageEl: Element): PageContent['viewport'] {
@@ -172,8 +287,8 @@ export class PDFReader {
           for (const node of mutation.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const el = node as Element;
-              if (el.matches('.page, [data-page-number], .pdf-page') || 
-                  el.querySelector('.page, [data-page-number], .pdf-page')) {
+              if (el.matches('.page-container[data-page-number], .page[data-page-number], [data-page-number], .pdf-page') || 
+                  el.querySelector('.page-container[data-page-number], .page[data-page-number], [data-page-number], .pdf-page')) {
                 shouldReextract = true;
                 break;
               }
@@ -191,8 +306,11 @@ export class PDFReader {
       subtree: true,
     });
     
+    // Use appropriate scroll container
+    const scrollContainer = document.querySelector('#viewerContainer') || document.documentElement;
+    
     this.scrollCheckInterval = window.setInterval(() => {
-      const scrollY = window.scrollY;
+      const scrollY = scrollContainer === document.documentElement ? window.scrollY : (scrollContainer as Element).scrollTop;
       if (Math.abs(scrollY - this.lastScrollY) > 50) {
         this.lastScrollY = scrollY;
         this.scrollCallbacks.forEach(cb => cb());
@@ -204,14 +322,19 @@ export class PDFReader {
   private checkVisiblePages(): void {
     if (!this.currentDocument) return;
     
-    const viewportHeight = window.innerHeight;
-    const scrollY = window.scrollY;
+    const scrollContainer = document.querySelector('#viewerContainer');
+    const viewportHeight = scrollContainer ? (scrollContainer as Element).clientHeight : window.innerHeight;
     
     for (const [pageNumber, pageContent] of this.currentDocument.pages) {
       const pageEl = document.querySelector(`[data-page-number="${pageNumber}"], #page${pageNumber}, .page[data-page-number="${pageNumber}"]`);
       if (pageEl) {
         const rect = pageEl.getBoundingClientRect();
-        const isVisible = rect.bottom > 0 && rect.top < viewportHeight;
+        const containerRect = scrollContainer ? scrollContainer.getBoundingClientRect() : { top: 0 };
+        
+        const relativeTop = rect.top - containerRect.top;
+        const relativeBottom = rect.bottom - containerRect.top;
+        
+        const isVisible = relativeBottom > 0 && relativeTop < viewportHeight;
         
         if (isVisible) {
           this.pageChangeCallbacks.forEach(cb => cb(pageNumber));
@@ -232,14 +355,19 @@ export class PDFReader {
     if (!this.currentDocument) return [];
     
     const visible: number[] = [];
-    const viewportHeight = window.innerHeight;
-    const scrollY = window.scrollY;
+    const scrollContainer = document.querySelector('#viewerContainer');
+    const viewportHeight = scrollContainer ? (scrollContainer as Element).clientHeight : window.innerHeight;
     
     for (const [pageNumber] of this.currentDocument.pages) {
       const pageEl = document.querySelector(`[data-page-number="${pageNumber}"], #page${pageNumber}, .page[data-page-number="${pageNumber}"]`);
       if (pageEl) {
         const rect = pageEl.getBoundingClientRect();
-        if (rect.bottom > 0 && rect.top < viewportHeight) {
+        const containerRect = scrollContainer ? scrollContainer.getBoundingClientRect() : { top: 0 };
+        
+        const relativeTop = rect.top - containerRect.top;
+        const relativeBottom = rect.bottom - containerRect.top;
+        
+        if (relativeBottom > 0 && relativeTop < viewportHeight) {
           visible.push(pageNumber);
         }
       }

@@ -1,6 +1,6 @@
 export interface PDFViewerInfo {
   isPDFViewer: boolean;
-  viewerType: 'native' | 'pdfjs' | 'unknown';
+  viewerType: 'native' | 'pdfjs' | 'custom' | 'unknown';
   pdfUrl: string | null;
   iframeElement: HTMLIFrameElement | null;
 }
@@ -30,6 +30,27 @@ export class PDFDetector {
   private analyzeCurrentPage(): PDFViewerInfo {
     const url = window.location.href;
     
+    // Our custom viewer
+    if (url.includes('/src/viewer/index.html')) {
+      return {
+        isPDFViewer: true,
+        viewerType: 'custom',
+        pdfUrl: this.extractFileFromViewerUrl(url),
+        iframeElement: null,
+      };
+    }
+    
+    // Chrome's built-in PDF viewer URL pattern
+    if (url.startsWith('chrome-extension://') && url.includes('/pdfjs/web/viewer.html')) {
+      return {
+        isPDFViewer: true,
+        viewerType: 'pdfjs',
+        pdfUrl: this.extractFileFromViewerUrl(url),
+        iframeElement: null,
+      };
+    }
+    
+    // Standard PDF URL patterns
     if (url.endsWith('.pdf') || url.includes('.pdf?') || url.includes('.pdf#')) {
       return {
         isPDFViewer: true,
@@ -39,6 +60,7 @@ export class PDFDetector {
       };
     }
     
+    // Check for PDF embed/object elements
     const pdfViewer = document.querySelector('embed[type="application/pdf"], object[type="application/pdf"]');
     if (pdfViewer) {
       return {
@@ -49,6 +71,7 @@ export class PDFDetector {
       };
     }
     
+    // Check for PDF iframes
     const iframes = document.querySelectorAll('iframe');
     for (const iframe of Array.from(iframes)) {
       try {
@@ -66,7 +89,8 @@ export class PDFDetector {
       }
     }
     
-    if (document.querySelector('#viewer, .pdfViewer, [data-pdfjs-viewer]')) {
+    // Check for PDF.js viewer elements
+    if (document.querySelector('#viewer, .pdfViewer, [data-pdfjs-viewer], #viewerContainer')) {
       return {
         isPDFViewer: true,
         viewerType: 'pdfjs',
@@ -81,6 +105,19 @@ export class PDFDetector {
       pdfUrl: null,
       iframeElement: null,
     };
+  }
+  
+  private extractFileFromViewerUrl(url: string): string | null {
+    try {
+      const urlObj = new URL(url);
+      const fileParam = urlObj.searchParams.get('file');
+      if (fileParam) {
+        return decodeURIComponent(fileParam);
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+    return url;
   }
   
   onChange(callback: (info: PDFViewerInfo) => void): () => void {

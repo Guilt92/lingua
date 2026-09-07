@@ -19,7 +19,6 @@ function Options() {
   const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [modelError, setModelError] = useState<string | null>(null);
   
   const applyTheme = useCallback((theme: 'light' | 'dark') => {
     setEffectiveTheme(theme);
@@ -104,34 +103,41 @@ function Options() {
     
     setTesting(true);
     setTestResult(null);
-    setModelError(null);
     setModelsLoaded(false);
+    setAvailableModels([]);
     
     try {
       const result = await translationManager.testProvider(
         settings.translation.apiKey,
         settings.translation.model
       );
-      setTestResult(result);
       
       const models = result.availableModels ?? [];
-      if (result.success && models.length > 0) {
-        setAvailableModels(models);
-        setModelsLoaded(true);
+      setAvailableModels(models);
+      setModelsLoaded(true);
+      setTestResult(result);
+      
+      if (result.success) {
+        // Cache the successful connection status
+        await chrome.storage.local.set({
+          lingua_connection_status: {
+            apiKey: settings.translation.apiKey,
+            model: settings.translation.model,
+            success: true,
+            timestamp: Date.now(),
+          }
+        });
         
-        const currentModel = settings.translation.model;
-        const isCurrentModelAvailable = models.some(m => m.name === currentModel);
-        
-        if (!isCurrentModelAvailable) {
-          const newModel = models[0].name;
-          await handleTranslationSettingChange('model', newModel);
-          setTestResult(prev => prev ? {
-            ...prev,
-            message: prev.message + ` (Model updated to ${models[0].displayName})`
-          } : null);
+        if (result.message.includes('Using:')) {
+          const match = result.message.match(/Using: (.+)$/);
+          if (match) {
+            const displayName = match[1];
+            const model = models.find(m => m.displayName === displayName);
+            if (model) {
+              await handleTranslationSettingChange('model', model.name);
+            }
+          }
         }
-      } else if (result.success) {
-        setModelsLoaded(true);
       }
     } catch (error) {
       setTestResult({
@@ -159,16 +165,8 @@ function Options() {
     );
   }
   
-  const modelOptions = availableModels.length > 0 
-    ? availableModels 
-    : [
-        { name: 'gemini-1.5-flash', displayName: 'Gemini 1.5 Flash (Fast, Free)' },
-        { name: 'gemini-1.5-pro', displayName: 'Gemini 1.5 Pro (Higher Quality)' },
-        { name: 'gemini-1.0-pro', displayName: 'Gemini 1.0 Pro' },
-      ];
-  
+  const modelOptions = availableModels;
   const currentModel = modelOptions.find(m => m.name === settings.translation.model);
-  const isCurrentModelValid = !!currentModel;
   
   return (
     <div className="app">
@@ -227,27 +225,22 @@ function Options() {
                 className="input select"
                 value={settings.translation.model}
                 onChange={(e) => handleTranslationSettingChange('model', e.target.value)}
-                disabled={!modelsLoaded || availableModels.length === 0}
+                disabled={!modelsLoaded || modelOptions.length === 0}
               >
+                {modelOptions.length === 0 && (
+                  <option value="">No models available</option>
+                )}
                 {modelOptions.map((model) => (
                   <option key={model.name} value={model.name}>
                     {model.displayName}
                   </option>
                 ))}
-                {!isCurrentModelValid && (
-                  <option value={settings.translation.model} disabled>
-                    {settings.translation.model} (not available)
-                  </option>
-                )}
               </select>
-              {!modelsLoaded && availableModels.length === 0 && (
-                <span className="model-hint">Enter API key and test connection to fetch available models</span>
+              {!modelsLoaded && (
+                <span className="model-hint">Enter API key and click "Test Connection" to fetch available models</span>
               )}
-              {modelsLoaded && availableModels.length === 0 && (
-                <span className="model-hint error">No compatible models found for this API key</span>
-              )}
-              {modelError && (
-                <span className="model-hint error">{modelError}</span>
+              {modelsLoaded && modelOptions.length === 0 && (
+                <span className="model-hint error">No compatible text-generation models available for this API key</span>
               )}
             </div>
           </div>

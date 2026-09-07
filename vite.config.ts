@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         popup: 'src/popup/index.html',
         options: 'src/options/index.html',
+        viewer: 'src/viewer/index.html',
         background: 'src/background/service-worker.ts',
         content: 'src/content/content.ts',
       },

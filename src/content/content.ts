@@ -21,12 +21,34 @@ class ContentScript {
     this.settings = await getSettings();
     this.isInitialized = true;
     
+    // Listen for messages from popup
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'START_TRANSLATION') {
+        this.handleStartTranslation();
+        sendResponse({ success: true });
+      }
+      return true;
+    });
+    
     const info = pdfDetector.getCurrentInfo();
     if (!info.isPDFViewer) return;
     
     await this.setupPDFTranslation();
     this.setupSettingsListener();
     this.setupPDFDetectorListener();
+  }
+  
+  private async handleStartTranslation(): Promise<void> {
+    const info = pdfDetector.getCurrentInfo();
+    if (!info.isPDFViewer) {
+      return;
+    }
+    
+    if (!this.isInitialized) {
+      await this.initialize();
+    }
+    
+    await this.processVisiblePages();
   }
   
   private async setupPDFTranslation(): Promise<void> {
@@ -275,7 +297,10 @@ class ContentScript {
 
 const contentScript = new ContentScript();
 
-if (document.readyState === 'loading') {
+// Do NOT initialize on our own custom viewer page — it has its own translation system
+if (window.location.href.includes('/src/viewer/index.html')) {
+  // Skip initialization entirely
+} else if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => contentScript.initialize());
 } else {
   contentScript.initialize();

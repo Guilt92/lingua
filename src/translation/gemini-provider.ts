@@ -1,23 +1,38 @@
 import { BaseTranslationProvider } from './translation-provider';
 import { TranslationRequest, TranslationResponse, ProviderConfig, ConnectionTestResult, ModelInfo } from '../types';
 
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-const FALLBACK_MODELS: ModelInfo[] = [
-  { name: 'gemini-1.5-flash', displayName: 'Gemini 1.5 Flash (Fast, Free)' },
-  { name: 'gemini-1.5-pro', displayName: 'Gemini 1.5 Pro (Higher Quality)' },
-  { name: 'gemini-1.0-pro', displayName: 'Gemini 1.0 Pro' },
+const EXCLUDED_PATTERNS = [
+  'tts', 'image', 'robotics', 'deep-research', 'computer-use',
+  'omni', 'transcribe', 'lyria', 'antigravity', 'embedding',
+  'preview-tts', '-image-preview', '-image',
 ];
+
+const PREFERRED_PREFIXES = ['gemini-3.8', 'gemini-3.7', 'gemini-3.6', 'gemini-3.5', 'gemini-3.1'];
+
+function isExcludedModel(name: string): boolean {
+  const lower = name.toLowerCase();
+  return EXCLUDED_PATTERNS.some(p => lower.includes(p));
+}
+
+function modelSortScore(name: string): number {
+  for (let i = 0; i < PREFERRED_PREFIXES.length; i++) {
+    if (name.startsWith(PREFERRED_PREFIXES[i])) return i;
+  }
+  if (name.startsWith('gemini-3.')) return PREFERRED_PREFIXES.length;
+  if (name.startsWith('gemini-2.5')) return PREFERRED_PREFIXES.length + 1;
+  return PREFERRED_PREFIXES.length + 2;
+}
 
 export class GeminiProvider extends BaseTranslationProvider {
   name = 'gemini' as const;
   
-  private apiKey: string;
-  private model: string;
-  private cachedModels: ModelInfo[] = [];
-  private modelsFetched = false;
+  private apiKey: string = '';
+  private model: string = '';
+  private availableModels: ModelInfo[] = [];
   
-  constructor(apiKey: string, model: string = 'gemini-1.5-flash') {
+  constructor(apiKey: string, model: string = '') {
     super();
     this.apiKey = apiKey;
     this.model = model;
@@ -26,159 +41,132 @@ export class GeminiProvider extends BaseTranslationProvider {
   setConfig(apiKey: string, model: string): void {
     this.apiKey = apiKey;
     this.model = model;
-    this.modelsFetched = false;
-    this.cachedModels = [];
+    this.availableModels = [];
   }
   
   getModels(): string[] {
-    if (this.cachedModels.length > 0) {
-      return this.cachedModels.map(m => m.name);
-    }
-    return FALLBACK_MODELS.map(m => m.name);
+    return this.availableModels.map(m => m.name);
   }
   
-  getCachedModels(): ModelInfo[] {
-    if (this.cachedModels.length > 0) {
-      return this.cachedModels;
-    }
-    return FALLBACK_MODELS;
+  getAvailableModels(): ModelInfo[] {
+    return this.availableModels;
   }
   
   async listModels(apiKey: string): Promise<ModelInfo[]> {
-    try {
-      const url = `${GEMINI_API_BASE}?key=${apiKey}`;
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
-        throw new Error(`Failed to list models: ${errorMessage}`);
-      }
-      
-      const data = await response.json();
-      const models: ModelInfo[] = (data.models || [])
-        .filter((m: any) => m.supportedGenerationMethods?.includes('generateContent'))
-        .map((m: any) => ({
-          name: m.name.replace('models/', ''),
-          displayName: m.displayName || m.name.replace('models/', ''),
-          description: m.description,
-          supportedMethods: m.supportedGenerationMethods,
+    const response = await fetch(`${GEMINI_API_BASE}/models?key=${apiKey}`);
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMsg = errorData.error?.message || `HTTP ${response.status}`;
+      throw new Error(errorMsg);
+    }
+    
+    const data = await response.json();
+    const rawModels: any[] = data.models || [];
+    
+    const filtered = rawModels
+      .filter((m: any) => {
+        const methods = m.supportedGenerationMethods || [];
+        if (!methods.includes('generateContent')) return false;
+        
+        const name: string = m.name || '';
+        if (isExcludedModel(name)) return false;
+        
+        return true;
+      })
+      .map((m: any) => {
+        const fullName: string = m.name || '';
+        const shortName = fullName.startsWith('models/') ? fullName.slice(7) : fullName;
+        
+        return {
+          name: shortName,
+          displayName: m.displayName || shortName,
+          description: m.description || '',
+          supportedMethods: m.supportedGenerationMethods || [],
           inputTokenLimit: m.inputTokenLimit,
           outputTokenLimit: m.outputTokenLimit,
-        }))
-        .filter((m: ModelInfo) => 
-          m.name.includes('gemini') && 
-          (m.name.includes('1.5') || m.name.includes('1.0'))
-        )
-        .sort((a: ModelInfo, b: ModelInfo) => {
-          const order: Record<string, number> = {
-            'gemini-1.5-flash': 1,
-            'gemini-1.5-pro': 2,
-            'gemini-1.0-pro': 3,
-          };
-          return (order[a.name] || 99) - (order[b.name] || 99);
-        });
-      
-      if (models.length === 0) {
-        return FALLBACK_MODELS;
-      }
-      
-      return models;
-    } catch (error) {
-      console.warn('Failed to fetch models from API, using fallback:', error);
-      return FALLBACK_MODELS;
-    }
+        };
+      })
+      .sort((a: ModelInfo, b: ModelInfo) => modelSortScore(a.name) - modelSortScore(b.name));
+    
+    return filtered;
   }
   
-  async fetchAndCacheModels(apiKey: string): Promise<ModelInfo[]> {
-    this.cachedModels = await this.listModels(apiKey);
-    this.modelsFetched = true;
-    return this.cachedModels;
-  }
-  
-  async testConnection(config: ProviderConfig): Promise<ConnectionTestResult> {
+  private async testModel(apiKey: string, modelName: string): Promise<boolean> {
     try {
-      const url = `${GEMINI_API_BASE}/${config.model}:generateContent?key=${config.apiKey}`;
-      const response = await fetch(url, {
+      const url = `${GEMINI_API_BASE}/models/${modelName}:generateContent?key=${apiKey}`;
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Hello' }] }],
-          generationConfig: { maxOutputTokens: 10 },
+          contents: [{ parts: [{ text: 'Say OK' }] }],
+          generationConfig: { maxOutputTokens: 5 },
         }),
       });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
-        const errorCode = errorData.error?.code;
-        const errorStatus = errorData.error?.status;
-        
-        let userMessage = 'Connection failed';
-        let details = errorMessage;
-        
-        if (response.status === 400) {
-          userMessage = 'Invalid request';
-          if (errorMessage.includes('API key')) {
-            userMessage = 'Invalid API key format';
-          } else if (errorMessage.includes('model')) {
-            userMessage = 'Model not supported';
-          }
-        } else if (response.status === 401) {
-          userMessage = 'Invalid or expired API key';
-        } else if (response.status === 403) {
-          userMessage = 'API key lacks permissions';
-        } else if (response.status === 404) {
-          userMessage = 'Model not found';
-        } else if (response.status === 429) {
-          userMessage = 'Rate limit exceeded';
-          details = 'Too many requests. Please wait a moment and try again.';
-        } else if (response.status >= 500) {
-          userMessage = 'Gemini server error';
-          details = 'The service is temporarily unavailable. Please try again later.';
-        }
-        
-        return { 
-          success: false, 
-          message: userMessage,
-          details: `${details} (${errorStatus || errorCode || response.status})`
-        };
-      }
-      
-      const models = await this.fetchAndCacheModels(config.apiKey);
-      
-      return { 
-        success: true, 
-        message: 'Connection successful!',
-        availableModels: models
-      };
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+  
+  async testConnection(config: ProviderConfig): Promise<ConnectionTestResult> {
+    let models: ModelInfo[] = [];
+    
+    try {
+      models = await this.listModels(config.apiKey);
     } catch (error) {
-      if (error instanceof TypeError && error.message.includes('fetch')) {
-        return { 
-          success: false, 
-          message: 'Network error', 
-          details: 'Unable to reach Gemini API. Check your internet connection.' 
-        };
-      }
-      return { 
-        success: false, 
-        message: 'Connection failed', 
-        details: error instanceof Error ? error.message : 'Unknown error' 
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, message: 'Failed to list models', details: msg };
+    }
+    
+    if (models.length === 0) {
+      return {
+        success: false,
+        message: 'No compatible models found',
+        details: 'No text-generation models available for this API key.',
       };
     }
+    
+    this.availableModels = models;
+    
+    let workingModel: ModelInfo | null = null;
+    for (const m of models) {
+      const ok = await this.testModel(config.apiKey, m.name);
+      if (ok) {
+        workingModel = m;
+        break;
+      }
+    }
+    
+    if (!workingModel) {
+      return {
+        success: false,
+        message: 'No working models found',
+        details: `Tested ${models.length} models, all failed.`,
+        availableModels: models,
+      };
+    }
+    
+    this.model = workingModel.name;
+    
+    return {
+      success: true,
+      message: `Connection successful! Using: ${workingModel.displayName}`,
+      availableModels: models,
+    };
   }
   
   async translate(request: TranslationRequest): Promise<TranslationResponse> {
     if (!this.apiKey) {
       return { translatedText: '', success: false, error: 'API key not configured' };
     }
+    if (!this.model) {
+      return { translatedText: '', success: false, error: 'No model selected' };
+    }
     
     try {
       const prompt = this.buildPrompt(request);
-      const url = `${GEMINI_API_BASE}/${this.model}:generateContent?key=${this.apiKey}`;
+      const url = `${GEMINI_API_BASE}/models/${this.model}:generateContent?key=${this.apiKey}`;
       
       const response = await fetch(url, {
         method: 'POST',
@@ -215,10 +203,10 @@ export class GeminiProvider extends BaseTranslationProvider {
       
       return { translatedText, success: true };
     } catch (error) {
-      return { 
-        translatedText: '', 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown translation error' 
+      return {
+        translatedText: '',
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown translation error',
       };
     }
   }

@@ -8,6 +8,8 @@ interface PopupState {
   settings: Settings | null;
   isConnected: boolean | null;
   isTesting: boolean;
+  pdfDetected: boolean;
+  isTranslating: boolean;
 }
 
 function Popup() {
@@ -15,6 +17,8 @@ function Popup() {
     settings: null,
     isConnected: null,
     isTesting: false,
+    pdfDetected: false,
+    isTranslating: false,
   });
   const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
   
@@ -24,8 +28,7 @@ function Popup() {
   }, []);
   
   useEffect(() => {
-    loadSettings();
-    checkConnection();
+    initializePopup();
     
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e: MediaQueryListEvent) => {
@@ -44,27 +47,71 @@ function Popup() {
     }
   }, [state.settings, applyTheme]);
   
-  const loadSettings = async () => {
+  const initializePopup = async () => {
+    // Load settings first
     const settings = await getSettings();
-    setState(prev => ({ ...prev, settings }));
-  };
-  
-  const checkConnection = async () => {
-    if (!state.settings?.translation.apiKey) {
-      setState(prev => ({ ...prev, isConnected: false }));
-      return;
+    
+    // Check connection status
+    let isConnected = false;
+    
+    if (settings.translation.apiKey && settings.translation.model) {
+      // Check cached status first
+      const cached = await chrome.storage.local.get('lingua_connection_status');
+      const cachedStatus = cached.lingua_connection_status;
+      
+      if (cachedStatus && 
+          cachedStatus.apiKey === settings.translation.apiKey && 
+          cachedStatus.model === settings.translation.model &&
+          cachedStatus.success &&
+          Date.now() - cachedStatus.timestamp < 3600000) {
+        // Use cached status (valid for 1 hour)
+        isConnected = true;
+      } else {
+        // Test connection
+        setState(prev => ({ ...prev, settings, isTesting: true }));
+        try {
+          const result = await translationManager.testProvider(
+            settings.translation.apiKey,
+            settings.translation.model
+          );
+          
+          // Cache the result
+          await chrome.storage.local.set({
+            lingua_connection_status: {
+              apiKey: settings.translation.apiKey,
+              model: settings.translation.model,
+              success: result.success,
+              timestamp: Date.now(),
+            }
+          });
+          
+          isConnected = result.success;
+        } catch {
+          isConnected = false;
+        }
+      }
     }
     
-    setState(prev => ({ ...prev, isTesting: true }));
+    // Check if PDF is detected in active tab
+    let pdfDetected = false;
     try {
-      const result = await translationManager.testProvider(
-        state.settings.translation.apiKey,
-        state.settings.translation.model
-      );
-      setState(prev => ({ ...prev, isConnected: result.success, isTesting: false }));
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.url) {
+        pdfDetected = tab.url.includes('.pdf') || 
+                      tab.url.includes('/viewer.html') ||
+                      tab.url.includes('chrome-extension://');
+      }
     } catch {
-      setState(prev => ({ ...prev, isConnected: false, isTesting: false }));
+      // Ignore errors
     }
+    
+    setState(prev => ({ 
+      ...prev, 
+      settings, 
+      isConnected, 
+      isTesting: false,
+      pdfDetected,
+    }));
   };
   
   const toggleEnabled = async () => {
@@ -79,6 +126,18 @@ function Popup() {
   
   const openSettings = () => {
     chrome.runtime.openOptionsPage();
+    window.close();
+  };
+  
+  const translatePDF = async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, { type: 'START_TRANSLATION' });
+      }
+    } catch (err) {
+      console.error('Failed to start translation:', err);
+    }
     window.close();
   };
   
@@ -108,12 +167,6 @@ function Popup() {
         </div>
       )}
       
-      {hasApiKey && !settings.translation.apiKey && (
-        <div className="warning-message">
-          API key appears invalid. Please re-enter it in Settings.
-        </div>
-      )}
-      
       <div className="section">
         <div className="section-title">PDF Translation</div>
         <div className="status-row">
@@ -140,10 +193,23 @@ function Popup() {
         <div className="gemini-status">
           <div className={`status-dot ${state.isTesting ? 'testing' : state.isConnected ? 'connected' : hasApiKey ? 'error' : ''}`} />
           <span className="status-text">
-            {state.isTesting ? 'Testing...' : state.isConnected ? 'Connected' : hasApiKey ? 'Not connected' : 'Not configured'}
+            {state.isTesting ? 'Testing...' : 
+             state.isConnected ? `Connected` : 
+             hasApiKey ? 'Not connected' : 'Not configured'}
           </span>
         </div>
+        {state.isConnected && settings.translation.model && (
+          <div className="model-name" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+            {settings.translation.model}
+          </div>
+        )}
       </div>
+      
+      {state.pdfDetected && state.isConnected && settings.display.enabled && (
+        <button className="btn btn-primary" onClick={translatePDF} style={{ width: '100%', marginBottom: '12px' }}>
+          Translate PDF
+        </button>
+      )}
       
       <button className="btn btn-secondary" onClick={openSettings}>
         Open Settings
