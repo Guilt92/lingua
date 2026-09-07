@@ -124,7 +124,7 @@
 
     /* Left: PDF */
     #pdf-panel {
-      flex: 1; overflow: auto; background: #525659;
+      flex: 1 1 0%; overflow: auto; background: #525659;
       min-width: 0;
     }
     #pdf-pages {
@@ -132,14 +132,30 @@
       padding: 20px 0; gap: 12px; min-height: 100%;
     }
 
+    /* Divider */
+    #divider {
+      width: 5px; flex-shrink: 0; cursor: col-resize;
+      background: #2a2a2a; position: relative; z-index: 10;
+      transition: background 0.15s ease;
+    }
+    #divider:hover, #divider.dragging {
+      background: var(--toolbar-active);
+    }
+    #divider::after {
+      content: ''; position: absolute;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 3px; height: 32px; border-radius: 2px;
+      background: rgba(255,255,255,0.15);
+      transition: background 0.15s ease, height 0.15s ease;
+    }
+    #divider:hover::after, #divider.dragging::after {
+      background: rgba(255,255,255,0.5); height: 48px;
+    }
+
     /* Right: Translation */
     #translation-panel {
-      width: 0; overflow: hidden; background: #1a1a2e;
-      border-left: 1px solid var(--toolbar-border);
-      transition: width 0.2s ease;
-    }
-    #translation-panel.open {
-      width: 400px;
+      flex: 0 0 0px; overflow: hidden; background: #1a1a2e;
+      min-width: 0;
     }
     #translation-pages {
       padding: 20px 16px; min-height: 100%;
@@ -333,6 +349,7 @@
 
   <div id="split-container">
     <div id="pdf-panel"><div id="pdf-pages"></div></div>
+    <div id="divider"></div>
     <div id="translation-panel">
       <div id="translation-pages"></div>
     </div>

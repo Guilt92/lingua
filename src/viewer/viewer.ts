@@ -17,6 +17,8 @@ let translationMode = false;
 let renderedPages = new Map<number, HTMLElement>();
 let translationCache = new Map<string, string>();
 let pendingRequests = new Set<string>();
+let splitRatio = 50; // percent for PDF panel
+let isDragging = false;
 
 // ═══════════════════════════════════════════════
 // DOM
@@ -24,6 +26,7 @@ let pendingRequests = new Set<string>();
 const $ = (id: string) => document.getElementById(id)!;
 const pdfPanel = $('pdf-panel') as HTMLElement;
 const pdfPages = $('pdf-pages') as HTMLElement;
+const dividerEl = $('divider') as HTMLElement;
 const transPanel = $('translation-panel') as HTMLElement;
 const transPages = $('translation-pages') as HTMLElement;
 const loadingEl = $('loading') as HTMLElement;
@@ -77,6 +80,9 @@ async function loadPDF(url: string) {
 
     updateNav();
     setupEvents();
+    initSplitDrag();
+    loadSplitRatio();
+    applySplit();
     await renderPage(currentPage);
   } catch (err: any) {
     showError(err.message || 'Could not load the PDF file.');
@@ -316,16 +322,16 @@ function toggleTranslation() {
   translationMode = !translationMode;
 
   if (translationMode) {
-    transPanel.classList.add('open');
     translateBtn.classList.add('active');
     translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translating...`;
     translateBtn.disabled = true;
+    applySplit();
     translateCurrentPage();
   } else {
-    transPanel.classList.remove('open');
     translateBtn.classList.remove('active');
     translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page`;
     transPages.innerHTML = '';
+    applySplit();
   }
 }
 
@@ -711,6 +717,117 @@ function downloadPDF() {
   a.href = fileUrl;
   a.download = docTitle.textContent || 'document.pdf';
   a.click();
+}
+
+// ═══════════════════════════════════════════════
+// SPLIT RESIZE
+// ═══════════════════════════════════════════════
+const MIN_SPLIT = 25; // minimum % for either panel
+const MAX_SPLIT = 75;
+
+function applySplit() {
+  if (!translationMode) {
+    // PDF takes full width
+    pdfPanel.style.flex = '1 1 0%';
+    dividerEl.style.display = 'none';
+    transPanel.style.flex = '0 0 0px';
+    transPanel.style.width = '0';
+  } else {
+    dividerEl.style.display = '';
+    const pdfPct = splitRatio;
+    const transPct = 100 - splitRatio;
+    pdfPanel.style.flex = `0 0 ${pdfPct}%`;
+    transPanel.style.flex = `0 0 ${transPct}%`;
+    transPanel.style.width = transPct + '%';
+  }
+}
+
+function initSplitDrag() {
+  let startX = 0;
+  let startRatio = 0;
+
+  function onMouseDown(e: MouseEvent) {
+    if (!translationMode) return;
+    e.preventDefault();
+    isDragging = true;
+    startX = e.clientX;
+    startRatio = splitRatio;
+    dividerEl.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+  function onMouseMove(e: MouseEvent) {
+    if (!isDragging) return;
+    const containerWidth = pdfPanel.parentElement!.getBoundingClientRect().width;
+    const dx = e.clientX - startX;
+    const dPct = (dx / containerWidth) * 100;
+    let newRatio = startRatio + dPct;
+    newRatio = Math.max(MIN_SPLIT, Math.min(MAX_SPLIT, newRatio));
+    splitRatio = Math.round(newRatio);
+    applySplit();
+  }
+
+  function onMouseUp() {
+    if (!isDragging) return;
+    isDragging = false;
+    dividerEl.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+    saveSplitRatio();
+  }
+
+  dividerEl.addEventListener('mousedown', onMouseDown);
+
+  // Touch support
+  dividerEl.addEventListener('touchstart', (e: TouchEvent) => {
+    if (!translationMode) return;
+    e.preventDefault();
+    isDragging = true;
+    startX = e.touches[0].clientX;
+    startRatio = splitRatio;
+    dividerEl.classList.add('dragging');
+  }, { passive: false });
+
+  document.addEventListener('touchmove', (e: TouchEvent) => {
+    if (!isDragging) return;
+    const containerWidth = pdfPanel.parentElement!.getBoundingClientRect().width;
+    const dx = e.touches[0].clientX - startX;
+    const dPct = (dx / containerWidth) * 100;
+    let newRatio = startRatio + dPct;
+    newRatio = Math.max(MIN_SPLIT, Math.min(MAX_SPLIT, newRatio));
+    splitRatio = Math.round(newRatio);
+    applySplit();
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    if (!isDragging) return;
+    isDragging = false;
+    dividerEl.classList.remove('dragging');
+    saveSplitRatio();
+  });
+}
+
+function saveSplitRatio() {
+  try {
+    chrome.storage.local.set({ lingua_split_ratio: splitRatio });
+  } catch { /* ignore */ }
+}
+
+function loadSplitRatio() {
+  try {
+    chrome.storage.local.get('lingua_split_ratio', (result) => {
+      if (result?.lingua_split_ratio) {
+        splitRatio = result.lingua_split_ratio;
+        splitRatio = Math.max(MIN_SPLIT, Math.min(MAX_SPLIT, splitRatio));
+        applySplit();
+      }
+    });
+  } catch { /* ignore */ }
 }
 
 // ═══════════════════════════════════════════════
