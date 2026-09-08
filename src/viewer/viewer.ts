@@ -6,9 +6,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-// ═══════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════
 let pdfDoc: any = null;
 let currentPage = 1;
 let totalPages = 0;
@@ -16,19 +13,16 @@ let currentScale = 1.5;
 let isTranslating = false;
 let translationMode = false;
 let renderedPages = new Map<number, HTMLElement>();
-let translationCache = new Map<string, string>(); // in-memory cache (loaded from persistent)
+let translationCache = new Map<string, string>();
 let pendingRequests = new Set<string>();
 let splitRatio = 50;
 let isDragging = false;
 let translationGeneration = 0;
 let docUrl = '';
-let translatingPage: number | null = null; // which page is currently being translated
+let translatingPage: number | null = null;
 const MAX_RETRIES = 5;
 const REQUEST_TIMEOUT = 45000;
 
-// ═══════════════════════════════════════════════
-// DOM
-// ═══════════════════════════════════════════════
 const $ = (id: string) => document.getElementById(id)!;
 const pdfPanel = $('pdf-panel') as HTMLElement;
 const pdfPages = $('pdf-pages') as HTMLElement;
@@ -65,14 +59,11 @@ function showError(msg: string) {
   errorText.textContent = msg;
 }
 
-// ═══════════════════════════════════════════════
-// CACHE HELPERS — page-level caching
-// ═══════════════════════════════════════════════
 const BLOCK_MARKER = '===BLOCK_';
 const BLOCK_MARKER_END = '===';
 
 function makePageCacheKey(pg: number, provider: string, model: string): string {
-  // Simple, stable key: docUrl + page + provider + model
+
   const str = `${docUrl}|${pg}|${provider}|${model}`;
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -96,9 +87,6 @@ async function saveToCache(key: string, text: string) {
   await setCacheEntry(key, text);
 }
 
-// ═══════════════════════════════════════════════
-// LOAD
-// ═══════════════════════════════════════════════
 async function loadPDF(url: string) {
   try {
     docTitle.textContent = decodeURIComponent(url).split('/').pop() || 'PDF';
@@ -127,9 +115,6 @@ async function loadPDF(url: string) {
   }
 }
 
-// ═══════════════════════════════════════════════
-// EVENTS
-// ═══════════════════════════════════════════════
 function setupEvents() {
   $('zoom-in').onclick = () => setZoom(currentScale + 0.25);
   $('zoom-out').onclick = () => setZoom(Math.max(0.25, currentScale - 0.25));
@@ -172,26 +157,26 @@ function setupEvents() {
 
   translateBtn.onclick = () => {
     if (!translationMode) {
-      // Enable translation mode and show cached translations
+
       toggleTranslation();
     } else {
-      // Already in translation mode — translate the current page
+
       translateCurrentPage();
     }
   };
 
-  // Scroll sync: independent with cooldown guard
+
   let pdfScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let transScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
   pdfPanel.addEventListener('scroll', () => {
-    if (transScrollTimer) return; // translation panel is the source
+    if (transScrollTimer) return;
     syncScrollToSegment('pdf');
     if (pdfScrollTimer) clearTimeout(pdfScrollTimer);
     pdfScrollTimer = setTimeout(() => { pdfScrollTimer = null; }, 100);
   });
   transPanel.addEventListener('scroll', () => {
-    if (pdfScrollTimer) return; // pdf panel is the source
+    if (pdfScrollTimer) return;
     syncScrollToSegment('trans');
     if (transScrollTimer) clearTimeout(transScrollTimer);
     transScrollTimer = setTimeout(() => { transScrollTimer = null; }, 100);
@@ -214,9 +199,6 @@ function handleKey(e: KeyboardEvent) {
   }
 }
 
-// ═══════════════════════════════════════════════
-// ZOOM
-// ═══════════════════════════════════════════════
 function setZoom(s: number) {
   currentScale = s;
   zoomLevel.textContent = Math.round(s * 100) + '%';
@@ -242,9 +224,6 @@ function fitPage() {
   });
 }
 
-// ═══════════════════════════════════════════════
-// NAVIGATION
-// ═══════════════════════════════════════════════
 function goPage(p: number) {
   if (p < 1 || p > totalPages || p === currentPage) return;
   currentPage = p;
@@ -283,7 +262,7 @@ function updateNav() {
   totalPagesEl.textContent = `/ ${totalPages}`;
   prevPageBtn.disabled = currentPage <= 1;
   nextPageBtn.disabled = currentPage >= totalPages;
-  // Update translate button text with current page number
+
   if (translationMode && !isTranslating) {
     translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page ${currentPage}`;
   }
@@ -299,9 +278,6 @@ function syncTransPanelToPage(pg: number) {
   }
 }
 
-// ═══════════════════════════════════════════════
-// SEMANTIC SCROLL SYNC
-// ═══════════════════════════════════════════════
 function syncScrollToSegment(source: 'pdf' | 'trans') {
   if (!translationMode) return;
 
@@ -386,9 +362,6 @@ function syncScrollToSegment(source: 'pdf' | 'trans') {
   }
 }
 
-// ═══════════════════════════════════════════════
-// PDF RENDERING (left panel) — NO auto-translation
-// ═══════════════════════════════════════════════
 async function ensurePageRendered(pg: number) {
   if (!renderedPages.has(pg)) await renderPage(pg);
 }
@@ -444,11 +417,11 @@ async function renderPage(pg: number) {
 
   renderedPages.set(pg, container);
 
-  // Store metadata for translation (but DO NOT auto-translate)
+
   (container as any)._textContent = textContent;
   (container as any)._viewport = vp;
 
-  // If translation mode is on, show cached translations only (no API calls)
+
   if (translationMode) {
     await showCachedPageTranslation(pg, textContent, vp);
   }
@@ -469,9 +442,6 @@ async function rerenderAll() {
   if (el) el.scrollIntoView({ block: 'start' });
 }
 
-// ═══════════════════════════════════════════════
-// TRANSLATION MODE — only explicit user action
-// ═══════════════════════════════════════════════
 function toggleTranslation() {
   translationMode = !translationMode;
 
@@ -480,7 +450,7 @@ function toggleTranslation() {
     translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page ${currentPage}`;
     translateBtn.disabled = false;
     applySplit();
-    // Show cached translations immediately (no API calls)
+
     showCachedPageTranslation(currentPage, null, null).then(() => syncTransPanelToPage(currentPage));
   } else {
     translateBtn.classList.remove('active');
@@ -490,7 +460,6 @@ function toggleTranslation() {
   }
 }
 
-// Show only cached translations (never calls API) — page-level cache
 async function showCachedPageTranslation(pg: number, textContentOverride: any, vpOverride: any) {
   const container = renderedPages.get(pg);
   if (!container) return;
@@ -502,11 +471,11 @@ async function showCachedPageTranslation(pg: number, textContentOverride: any, v
   const lines = buildBlocks(textContent, vp);
   const blocks = groupLinesToBlocks(lines, pg);
 
-  // Remove old page element
+
   const oldPageEl = transPages.querySelector(`[data-trans-page="${pg}"]`);
   if (oldPageEl) oldPageEl.remove();
 
-  // Create page container
+
   const pageEl = document.createElement('div');
   pageEl.className = 'tp-page';
   pageEl.setAttribute('data-trans-page', String(pg));
@@ -517,13 +486,13 @@ async function showCachedPageTranslation(pg: number, textContentOverride: any, v
   label.textContent = `Page ${pg}`;
   pageEl.appendChild(label);
 
-  // Insert in order
+
   const existingPages = Array.from(transPages.querySelectorAll('.tp-page')) as HTMLElement[];
   const afterPage = existingPages.find(el => parseInt(el.getAttribute('data-trans-page') || '0') > pg);
   if (afterPage) transPages.insertBefore(pageEl, afterPage);
   else transPages.appendChild(pageEl);
 
-  // Check page-level cache
+
   const settings = await new Promise<any>(resolve => {
     chrome.storage.sync.get('lingua_settings', resolve);
   });
@@ -535,11 +504,11 @@ async function showCachedPageTranslation(pg: number, textContentOverride: any, v
   const cached = translationCache.get(cacheKey);
 
   if (cached) {
-    // Parse cached page translation and render
+
     const translations = parsePageTranslations(cached, blocks.length);
     renderTranslatedBlocks(pageEl, blocks, translations, vp);
   } else {
-    // Nothing cached — show hint
+
     const hint = document.createElement('div');
     hint.className = 'tp-status';
     hint.textContent = 'Click "Translate Page" to translate this page.';
@@ -547,7 +516,6 @@ async function showCachedPageTranslation(pg: number, textContentOverride: any, v
   }
 }
 
-// Explicit translate action — ONLY called from button click
 async function translateCurrentPage() {
   if (isTranslating || !pdfDoc || !translationMode) return;
 
@@ -578,9 +546,6 @@ async function translateCurrentPage() {
   }
 }
 
-// ═══════════════════════════════════════════════
-// TEXT BLOCK BUILDING
-// ═══════════════════════════════════════════════
 interface TextLine {
   y: number;
   height: number;
@@ -690,16 +655,13 @@ function groupLinesToBlocks(lines: TextLine[], pg: number): TextBlock[] {
   return blocks;
 }
 
-// ═══════════════════════════════════════════════
-// PAGE-LEVEL TRANSLATION — ONE request per page
-// ═══════════════════════════════════════════════
-const MAX_BLOCKS_PER_REQUEST = 50; // intelligent batching threshold
+const MAX_BLOCKS_PER_REQUEST = 50;
 
 async function translateEntirePage(pg: number, textContent: any, vp: any, generation: number) {
   const lines = buildBlocks(textContent, vp);
   const blocks = groupLinesToBlocks(lines, pg);
 
-  // Filter to translatable blocks (skip very short ones)
+
   const translatableBlocks = blocks.filter(b => b.text.length >= 3);
 
   if (translatableBlocks.length === 0) {
@@ -707,11 +669,11 @@ async function translateEntirePage(pg: number, textContent: any, vp: any, genera
     return;
   }
 
-  // Remove old page element
+
   const oldPageEl = transPages.querySelector(`[data-trans-page="${pg}"]`);
   if (oldPageEl) oldPageEl.remove();
 
-  // Create page container
+
   const pageEl = document.createElement('div');
   pageEl.className = 'tp-page';
   pageEl.setAttribute('data-trans-page', String(pg));
@@ -722,13 +684,13 @@ async function translateEntirePage(pg: number, textContent: any, vp: any, genera
   label.textContent = `Page ${pg}`;
   pageEl.appendChild(label);
 
-  // Insert in order
+
   const existingPages = Array.from(transPages.querySelectorAll('.tp-page')) as HTMLElement[];
   const afterPage = existingPages.find(el => parseInt(el.getAttribute('data-trans-page') || '0') > pg);
   if (afterPage) transPages.insertBefore(pageEl, afterPage);
   else transPages.appendChild(pageEl);
 
-  // Get provider config
+
   const settings = await new Promise<any>(resolve => {
     chrome.storage.sync.get('lingua_settings', resolve);
   });
@@ -736,48 +698,47 @@ async function translateEntirePage(pg: number, textContent: any, vp: any, genera
   const model = settings?.lingua_settings?.translation?.model || '';
   const provider = apiKey ? 'gemini' : '';
 
-  // Check page-level cache first
+
   const cacheKey = makePageCacheKey(pg, provider, model);
   const cached = translationCache.get(cacheKey);
 
   let allTranslations: string[] | null = null;
 
   if (cached) {
-    // Cache hit — parse and render immediately
+
     allTranslations = parsePageTranslations(cached, translatableBlocks.length);
   } else {
-    // Cache miss — translate entire page in ONE request (or batched if oversized)
+
     allTranslations = await translatePageInBatches(
       translatableBlocks, pg, provider, model, generation
     );
     if (generation !== translationGeneration) return;
 
     if (allTranslations) {
-      // Save complete page translation to cache
+
       const serialized = allTranslations.join('\n===BLOCK_SEP===\n');
       await saveToCache(cacheKey, serialized);
     } else {
-      // Translation failed
+
       showTransStatus(pg, 'error', 'Translation failed. Check your API key and connection.');
       return;
     }
   }
 
-  // Render all translated blocks
+
   renderTranslatedBlocks(pageEl, translatableBlocks, allTranslations, vp);
   clearTransPanelStatus(pg);
 }
 
-// Translate page in ONE request, or batch if oversized
 async function translatePageInBatches(
   blocks: TextBlock[], pg: number, provider: string, model: string, generation: number
 ): Promise<string[] | null> {
   if (blocks.length <= MAX_BLOCKS_PER_REQUEST) {
-    // Normal case: ONE request for the entire page
+
     return translatePageBatch(blocks, pg, provider, model, generation);
   }
 
-  // Oversized page: split into batches
+
   const allTranslations: string[] = [];
   const batches = Math.ceil(blocks.length / MAX_BLOCKS_PER_REQUEST);
 
@@ -799,7 +760,6 @@ async function translatePageInBatches(
   return allTranslations;
 }
 
-// Translate a batch of blocks in ONE API request
 async function translatePageBatch(
   blocks: TextBlock[], pg: number, provider: string, model: string, generation: number
 ): Promise<string[] | null> {
@@ -809,7 +769,7 @@ async function translatePageBatch(
   pendingRequests.add(requestKey);
 
   try {
-    // Build the single request containing all blocks
+
     const prompt = buildPagePrompt(blocks);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -819,7 +779,7 @@ async function translatePageBatch(
         const rawResponse = await callTranslationAPI(prompt, generation);
         if (generation !== translationGeneration) return null;
 
-        // Parse the response to extract individual block translations
+
         const translations = parsePageResponse(rawResponse, blocks.length);
         pendingRequests.delete(requestKey);
         return translations;
@@ -865,7 +825,6 @@ async function translatePageBatch(
   }
 }
 
-// Build a single prompt for the entire page
 function buildPagePrompt(blocks: TextBlock[]): string {
   const blockTexts = blocks.map((block, i) => `[BLOCK_${i}]\n${block.text}`).join('\n\n');
 
@@ -890,38 +849,37 @@ ${blockTexts}
 Return ONLY the translated blocks with their markers, no explanations.`;
 }
 
-// Parse the API response to extract individual block translations
 function parsePageResponse(response: string, expectedCount: number): string[] {
   const translations: string[] = [];
 
-  // Split by block markers
+
   const parts = response.split(/\[BLOCK_\d+\]/);
 
-  // First part is usually empty (before first marker) or contains preamble
+
   for (let i = 0; i < parts.length; i++) {
     const trimmed = parts[i].trim();
-    // Skip empty parts or preamble text before first block
+
     if (trimmed.length === 0) continue;
-    // If this looks like preamble text (no block marker before it), skip it
+
     if (translations.length === 0 && !response.includes(`[BLOCK_${translations.length}]`)) {
       continue;
     }
     translations.push(trimmed);
   }
 
-  // Fallback: if marker parsing didn't work, try splitting by double newlines
+
   if (translations.length !== expectedCount) {
     const fallback = response.split(/\n\s*\n/).map(s => s.trim()).filter(s => s.length > 0);
     if (fallback.length === expectedCount) {
       return fallback;
     }
 
-    // Last fallback: if we got exactly the right number from marker parsing, use it
+
     if (translations.length === expectedCount) {
       return translations;
     }
 
-    // Pad with empty strings if we got fewer, or truncate if we got more
+
     while (translations.length < expectedCount) {
       translations.push('');
     }
@@ -931,17 +889,15 @@ function parsePageResponse(response: string, expectedCount: number): string[] {
   return translations;
 }
 
-// Parse cached page translations
 function parsePageTranslations(cached: string, expectedCount: number): string[] {
   const parts = cached.split('\n===BLOCK_SEP===\n');
   if (parts.length === expectedCount) return parts;
 
-  // Mismatch — pad or truncate
+
   while (parts.length < expectedCount) parts.push('');
   return parts.slice(0, expectedCount);
 }
 
-// Render translated blocks into the page element
 function renderTranslatedBlocks(pageEl: HTMLElement, blocks: TextBlock[], translations: string[], vp: any) {
   const GAP = 8;
   let cursorY = 0;
@@ -1000,7 +956,6 @@ function clearTransPanelStatus(pg: number) {
   if (el) el.remove();
 }
 
-// Call the translation API with a prompt
 async function callTranslationAPI(prompt: string, generation: number): Promise<string> {
   const settings = await new Promise<any>(resolve => {
     chrome.storage.sync.get('lingua_settings', resolve);
@@ -1043,7 +998,7 @@ async function callTranslationAPI(prompt: string, generation: number): Promise<s
           retryDelay = errJson.error.retryDelay;
         }
       } catch {
-        // Body wasn't JSON
+
       }
 
       let errMsg = `HTTP ${resp.status}: ${errorMessage}`;
@@ -1066,9 +1021,6 @@ async function callTranslationAPI(prompt: string, generation: number): Promise<s
   }
 }
 
-// ═══════════════════════════════════════════════
-// SEGMENT HIGHLIGHTING
-// ═══════════════════════════════════════════════
 let activeSegmentId: string | null = null;
 let highlightTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -1118,9 +1070,6 @@ function clearHighlights() {
   document.querySelectorAll('.src-highlight').forEach(el => el.remove());
 }
 
-// ═══════════════════════════════════════════════
-// TRANSLATION HTTP HELPERS
-
 function extractStatus(errMsg: string): number | null {
   const match = errMsg.match(/^HTTP (\d+)/);
   return match ? parseInt(match[1]) : null;
@@ -1136,9 +1085,6 @@ function extractRetryAfter(errMsg: string): number | null {
   return null;
 }
 
-// ═══════════════════════════════════════════════
-// SEARCH
-// ═══════════════════════════════════════════════
 let searchResults: { page: number }[] = [];
 let searchIdx = -1;
 
@@ -1164,9 +1110,6 @@ async function searchNav(dir: number) {
   searchInfo.textContent = `${searchIdx + 1} / ${searchResults.length}`;
 }
 
-// ═══════════════════════════════════════════════
-// DOWNLOAD
-// ═══════════════════════════════════════════════
 function downloadPDF() {
   if (!docUrl) return;
   const a = document.createElement('a');
@@ -1175,9 +1118,6 @@ function downloadPDF() {
   a.click();
 }
 
-// ═══════════════════════════════════════════════
-// SPLIT RESIZE
-// ═══════════════════════════════════════════════
 const MIN_SPLIT = 25;
 const MAX_SPLIT = 75;
 
@@ -1244,7 +1184,7 @@ function initSplitDrag() {
     saveSplitRatio();
   });
 
-  // Touch support
+
   dividerEl.addEventListener('touchstart', (e: TouchEvent) => {
     if (!translationMode) return;
     e.preventDefault();
@@ -1276,7 +1216,7 @@ function initSplitDrag() {
 function saveSplitRatio() {
   try {
     chrome.storage.local.set({ lingua_split_ratio: splitRatio });
-  } catch { /* ignore */ }
+  } catch {  }
 }
 
 function loadSplitRatio() {
@@ -1288,10 +1228,7 @@ function loadSplitRatio() {
         applySplit();
       }
     });
-  } catch { /* ignore */ }
+  } catch {  }
 }
 
-// ═══════════════════════════════════════════════
-// UTILS
-// ═══════════════════════════════════════════════
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }

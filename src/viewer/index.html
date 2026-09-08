@@ -25,7 +25,7 @@
       color-scheme: dark;
     }
 
-    /* ── Toolbar ── */
+
     #toolbar {
       position: fixed; top: 0; left: 0; right: 0; height: 44px;
       background: var(--toolbar-bg);
@@ -98,7 +98,7 @@
     .btn-translate:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
     .btn-translate svg { width: 14px; height: 14px; fill: currentColor; }
 
-    /* ── Search Panel ── */
+
     #search-panel {
       position: fixed; top: 44px; right: 12px;
       background: var(--toolbar-bg); border: 1px solid var(--toolbar-border);
@@ -116,13 +116,13 @@
     #search-input:focus { border-color: var(--toolbar-active); }
     #search-info { color: var(--toolbar-muted); font-size: 11px; min-width: 50px; text-align: center; }
 
-    /* ── Split View ── */
+
     #split-container {
       position: fixed; top: 44px; left: 0; right: 0; bottom: 0;
       display: flex; overflow: hidden;
     }
 
-    /* Left: PDF */
+
     #pdf-panel {
       flex: 1 1 0%; overflow: auto; background: #525659;
       min-width: 0;
@@ -132,7 +132,7 @@
       padding: 20px 0; gap: 12px; min-height: 100%;
     }
 
-    /* Divider */
+
     #divider {
       width: 5px; flex-shrink: 0; cursor: col-resize;
       background: #2a2a2a; position: relative; z-index: 10;
@@ -152,7 +152,7 @@
       background: rgba(255,255,255,0.5); height: 48px;
     }
 
-    /* Right: Translation */
+
     #translation-panel {
       flex: 0 0 0px; overflow: hidden; background: #1c1c28;
       min-width: 0;
@@ -161,7 +161,7 @@
       padding: 20px 12px; min-height: 100%;
     }
 
-    /* Page container */
+
     .page-container {
       position: relative; background: white;
       box-shadow: 0 1px 6px rgba(0,0,0,0.35), 0 0 1px rgba(0,0,0,0.2);
@@ -171,7 +171,7 @@
     }
     .page-container canvas { display: block; border-radius: 2px; }
 
-    /* Text layer */
+
     .text-layer {
       position: absolute; top: 0; left: 0; right: 0; bottom: 0;
       overflow: hidden; opacity: 0.3; line-height: 1.0;
@@ -181,7 +181,7 @@
       transform-origin: 0% 0%;
     }
 
-    /* ── Translation Page ── */
+
     .tp-page {
       position: relative;
       margin-bottom: 0;
@@ -221,7 +221,7 @@
       white-space: pre-wrap;
     }
 
-    /* Source highlight overlay */
+
     .src-highlight {
       position: absolute;
       background: rgba(0, 120, 212, 0.15);
@@ -232,7 +232,7 @@
       transition: opacity 0.3s ease;
     }
 
-    /* ── Status indicator in translation panel ── */
+
     .tp-status {
       color: var(--toolbar-muted); font-size: 12px;
       text-align: center; padding: 40px 20px; line-height: 1.6;
@@ -264,7 +264,7 @@
       border-left: 2px solid #e05555;
     }
 
-    /* Loading */
+
     #loading {
       position: fixed; top: 44px; left: 0; right: 0; bottom: 0;
       display: flex; align-items: center; justify-content: center;
@@ -299,7 +299,7 @@
       #pdf-panel { flex: 1 1 0% !important; }
     }
 
-    /* ── Responsive ── */
+
     @media (max-width: 768px) {
       #toolbar { padding: 0 6px; gap: 1px; }
       .tb { width: 28px; height: 28px; }

@@ -21,15 +21,15 @@ function Popup() {
     isTranslating: false,
   });
   const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
-  
+
   const applyTheme = useCallback((theme: 'light' | 'dark') => {
     setEffectiveTheme(theme);
     document.documentElement.setAttribute('data-theme', theme);
   }, []);
-  
+
   useEffect(() => {
     initializePopup();
-    
+
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e: MediaQueryListEvent) => {
       if (state.settings?.ui.theme === 'system') {
@@ -39,43 +39,43 @@ function Popup() {
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, [applyTheme]);
-  
+
   useEffect(() => {
     if (state.settings) {
       const theme = getEffectiveTheme(state.settings.ui.theme);
       applyTheme(theme);
     }
   }, [state.settings, applyTheme]);
-  
+
   const initializePopup = async () => {
-    // Load settings first
+
     const settings = await getSettings();
-    
-    // Check connection status
+
+
     let isConnected = false;
-    
+
     if (settings.translation.apiKey && settings.translation.model) {
-      // Check cached status first
+
       const cached = await chrome.storage.local.get('lingua_connection_status');
       const cachedStatus = cached.lingua_connection_status;
-      
-      if (cachedStatus && 
-          cachedStatus.apiKey === settings.translation.apiKey && 
+
+      if (cachedStatus &&
+          cachedStatus.apiKey === settings.translation.apiKey &&
           cachedStatus.model === settings.translation.model &&
           cachedStatus.success &&
           Date.now() - cachedStatus.timestamp < 3600000) {
-        // Use cached status (valid for 1 hour)
+
         isConnected = true;
       } else {
-        // Test connection
+
         setState(prev => ({ ...prev, settings, isTesting: true }));
         try {
           const result = await translationManager.testProvider(
             settings.translation.apiKey,
             settings.translation.model
           );
-          
-          // Cache the result
+
+
           await chrome.storage.local.set({
             lingua_connection_status: {
               apiKey: settings.translation.apiKey,
@@ -84,36 +84,36 @@ function Popup() {
               timestamp: Date.now(),
             }
           });
-          
+
           isConnected = result.success;
         } catch {
           isConnected = false;
         }
       }
     }
-    
-    // Check if PDF is detected in active tab
+
+
     let pdfDetected = false;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.url) {
-        pdfDetected = tab.url.includes('.pdf') || 
+        pdfDetected = tab.url.includes('.pdf') ||
                       tab.url.includes('/viewer.html') ||
                       tab.url.includes('chrome-extension://');
       }
     } catch {
-      // Ignore errors
+
     }
-    
-    setState(prev => ({ 
-      ...prev, 
-      settings, 
-      isConnected, 
+
+    setState(prev => ({
+      ...prev,
+      settings,
+      isConnected,
       isTesting: false,
       pdfDetected,
     }));
   };
-  
+
   const toggleEnabled = async () => {
     if (!state.settings) return;
     const newEnabled = !state.settings.display.enabled;
@@ -123,12 +123,12 @@ function Popup() {
       settings: prev.settings ? { ...prev.settings, display: { ...prev.settings.display, enabled: newEnabled } } : null,
     }));
   };
-  
+
   const openSettings = () => {
     chrome.runtime.openOptionsPage();
     window.close();
   };
-  
+
   const translatePDF = async () => {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -140,7 +140,7 @@ function Popup() {
     }
     window.close();
   };
-  
+
   if (!state.settings) {
     return (
       <div className="container" style={{ textAlign: 'center', padding: '40px 16px' }}>
@@ -149,24 +149,24 @@ function Popup() {
       </div>
     );
   }
-  
+
   const { settings } = state;
   const hasApiKey = !!settings.translation.apiKey;
-  
+
   return (
     <div className="container">
       <div className="header">
         <div className="logo">L</div>
         <div className="title">Lingua</div>
       </div>
-      
+
       {!hasApiKey && (
         <div className="error-message">
           Gemini API key is not configured.<br />
           Open Settings to configure it.
         </div>
       )}
-      
+
       <div className="section">
         <div className="section-title">PDF Translation</div>
         <div className="status-row">
@@ -178,7 +178,7 @@ function Popup() {
           />
         </div>
       </div>
-      
+
       <div className="section">
         <div className="section-title">Language</div>
         <div className="lang-pair">
@@ -187,14 +187,14 @@ function Popup() {
           <span className="lang" style={{ direction: 'rtl', fontFamily: 'Vazirmatn, Tahoma, sans-serif' }}>فارسی</span>
         </div>
       </div>
-      
+
       <div className="section">
         <div className="section-title">Gemini</div>
         <div className="gemini-status">
           <div className={`status-dot ${state.isTesting ? 'testing' : state.isConnected ? 'connected' : hasApiKey ? 'error' : ''}`} />
           <span className="status-text">
-            {state.isTesting ? 'Testing...' : 
-             state.isConnected ? `Connected` : 
+            {state.isTesting ? 'Testing...' :
+             state.isConnected ? `Connected` :
              hasApiKey ? 'Not connected' : 'Not configured'}
           </span>
         </div>
@@ -204,17 +204,17 @@ function Popup() {
           </div>
         )}
       </div>
-      
+
       {state.pdfDetected && state.isConnected && settings.display.enabled && (
         <button className="btn btn-primary" onClick={translatePDF} style={{ width: '100%', marginBottom: '12px' }}>
           Translate PDF
         </button>
       )}
-      
+
       <button className="btn btn-secondary" onClick={openSettings}>
         Open Settings
       </button>
-      
+
       <div className="footer">
         <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
         <span className="separator">·</span>

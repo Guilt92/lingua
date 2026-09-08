@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
-import { 
-  getSettings, 
-  saveTranslationSettings, 
-  saveDisplaySettings, 
-  saveUISettings, 
+import {
+  getSettings,
+  saveTranslationSettings,
+  saveDisplaySettings,
+  saveUISettings,
   clearCache,
-  getEffectiveTheme 
+  getEffectiveTheme
 } from '../storage/settings';
 import { translationManager } from '../translation';
 import { Settings, TranslationSettings, DisplaySettings, ThemeMode, ConnectionTestResult, ModelInfo } from '../types';
@@ -19,12 +19,12 @@ function Options() {
   const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  
+
   const applyTheme = useCallback((theme: 'light' | 'dark') => {
     setEffectiveTheme(theme);
     document.documentElement.setAttribute('data-theme', theme);
   }, []);
-  
+
   useEffect(() => {
     loadSettings();
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -36,19 +36,19 @@ function Options() {
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, [applyTheme]);
-  
+
   useEffect(() => {
     if (settings) {
       const theme = getEffectiveTheme(settings.ui.theme);
       applyTheme(theme);
     }
   }, [settings, applyTheme]);
-  
+
   const loadSettings = async () => {
     const s = await getSettings();
     setSettings(s);
   };
-  
+
   const handleTranslationSettingChange = async <K extends keyof TranslationSettings>(
     key: K,
     value: TranslationSettings[K]
@@ -58,7 +58,7 @@ function Options() {
     setSettings(prev => prev ? { ...prev, translation: newSettings } : null);
     await saveTranslationSettings({ [key]: value });
     showSaveStatus('saved');
-    
+
     if (key === 'apiKey' || key === 'model') {
       if (value) {
         await translationManager.updateConfig(
@@ -68,7 +68,7 @@ function Options() {
       }
     }
   };
-  
+
   const handleDisplaySettingChange = async <K extends keyof DisplaySettings>(
     key: K,
     value: DisplaySettings[K]
@@ -79,7 +79,7 @@ function Options() {
     await saveDisplaySettings({ [key]: value });
     showSaveStatus('saved');
   };
-  
+
   const handleUISettingChange = async <K extends keyof Settings['ui']>(
     key: K,
     value: Settings['ui'][K]
@@ -90,35 +90,35 @@ function Options() {
     await saveUISettings({ [key]: value });
     showSaveStatus('saved');
   };
-  
+
   const showSaveStatus = (status: 'saving' | 'saved' | 'error') => {
     setSaveStatus(status);
     if (status === 'saved') {
       setTimeout(() => setSaveStatus('idle'), 1500);
     }
   };
-  
+
   const handleTestConnection = async () => {
     if (!settings?.translation.apiKey) return;
-    
+
     setTesting(true);
     setTestResult(null);
     setModelsLoaded(false);
     setAvailableModels([]);
-    
+
     try {
       const result = await translationManager.testProvider(
         settings.translation.apiKey,
         settings.translation.model
       );
-      
+
       const models = result.availableModels ?? [];
       setAvailableModels(models);
       setModelsLoaded(true);
       setTestResult(result);
-      
+
       if (result.success) {
-        // Cache the successful connection status
+
         await chrome.storage.local.set({
           lingua_connection_status: {
             apiKey: settings.translation.apiKey,
@@ -127,7 +127,7 @@ function Options() {
             timestamp: Date.now(),
           }
         });
-        
+
         if (result.message.includes('Using:')) {
           const match = result.message.match(/Using: (.+)$/);
           if (match) {
@@ -149,13 +149,13 @@ function Options() {
       setTesting(false);
     }
   };
-  
+
   const handleClearCache = async () => {
     await clearCache();
     setTestResult({ success: true, message: 'Translation cache cleared.' });
     setTimeout(() => setTestResult(null), 2000);
   };
-  
+
   if (!settings) {
     return (
       <div className="app-loading">
@@ -164,10 +164,10 @@ function Options() {
       </div>
     );
   }
-  
+
   const modelOptions = availableModels;
   const currentModel = modelOptions.find(m => m.name === settings.translation.model);
-  
+
   return (
     <div className="app">
       <header className="header">
@@ -177,13 +177,13 @@ function Options() {
           <p className="subtitle">Configure PDF translation preferences</p>
         </div>
       </header>
-      
+
       <main className="main">
         <section className="card">
           <header className="card-header">
             <h2 className="card-title">Gemini API</h2>
           </header>
-          
+
           <div className="field">
             <label className="label" htmlFor="apiKey">API Key</label>
             <div className="input-wrapper">
@@ -216,7 +216,7 @@ function Options() {
               Get your API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Google AI Studio</a>
             </p>
           </div>
-          
+
           <div className="field">
             <label className="label" htmlFor="model">Model</label>
             <div className="model-select-wrapper">
@@ -244,7 +244,7 @@ function Options() {
               )}
             </div>
           </div>
-          
+
           <div className="field">
             <div className="btn-group">
               <button
@@ -271,12 +271,12 @@ function Options() {
             )}
           </div>
         </section>
-        
+
         <section className="card">
           <header className="card-header">
             <h2 className="card-title">Translation</h2>
           </header>
-          
+
           <div className="field">
             <label className="label">Translation Mode</label>
             <div className="radio-group">
@@ -308,7 +308,7 @@ function Options() {
               <strong>Technical:</strong> Preserves terminology (Kubernetes, API, Linux, etc.) in English.
             </p>
           </div>
-          
+
           <div className="field">
             <label className="label" htmlFor="sourceLanguage">Source Language</label>
             <select
@@ -322,7 +322,7 @@ function Options() {
             </select>
             <p className="helper">More languages coming in future versions</p>
           </div>
-          
+
           <div className="field">
             <label className="label" htmlFor="targetLanguage">Target Language</label>
             <select
@@ -336,12 +336,12 @@ function Options() {
             </select>
           </div>
         </section>
-        
+
         <section className="card">
           <header className="card-header">
             <h2 className="card-title">Display</h2>
           </header>
-          
+
           <div className="field">
             <div className="checkbox-container">
               <input
@@ -356,7 +356,7 @@ function Options() {
               </label>
             </div>
           </div>
-          
+
           <div className="field">
             <label className="label">Font Size: {settings.display.fontSize}px</label>
             <div className="slider-container">
@@ -372,7 +372,7 @@ function Options() {
               <span className="slider-label">{settings.display.fontSize}px</span>
             </div>
           </div>
-          
+
           <div className="field">
             <label className="label">Line Height: {settings.display.lineHeight.toFixed(1)}</label>
             <div className="slider-container">
@@ -388,7 +388,7 @@ function Options() {
               <span className="slider-label">{settings.display.lineHeight.toFixed(1)}</span>
             </div>
           </div>
-          
+
           <div className="field">
             <label className="label">Opacity: {Math.round(settings.display.opacity * 100)}%</label>
             <div className="slider-container">
@@ -405,12 +405,12 @@ function Options() {
             </div>
           </div>
         </section>
-        
+
         <section className="card">
           <header className="card-header">
             <h2 className="card-title">Appearance</h2>
           </header>
-          
+
           <div className="field">
             <label className="label" htmlFor="theme">Theme</label>
             <select
@@ -427,7 +427,7 @@ function Options() {
           </div>
         </section>
       </main>
-      
+
       {saveStatus === 'saved' && (
         <div className="toast toast-success">
           Settings saved
