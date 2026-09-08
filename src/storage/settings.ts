@@ -33,7 +33,13 @@ export async function getSettings(): Promise<Settings> {
     chrome.storage.sync.get(SETTINGS_KEY, (result) => {
       const stored = result[SETTINGS_KEY];
       if (stored) {
-        resolve({ ...DEFAULT_SETTINGS, ...stored });
+        resolve({
+          ...DEFAULT_SETTINGS,
+          ...stored,
+          translation: { ...DEFAULT_SETTINGS.translation, ...(stored.translation || {}) },
+          display: { ...DEFAULT_SETTINGS.display, ...(stored.display || {}) },
+          ui: { ...DEFAULT_SETTINGS.ui, ...(stored.ui || {}) },
+        });
       } else {
         resolve(DEFAULT_SETTINGS);
       }
@@ -140,11 +146,12 @@ export function generateCacheKey(text: string, sourceLang: string, targetLang: s
 }
 
 export function onSettingsChange(callback: (settings: Settings) => void): () => void {
-  chrome.storage.onChanged.addListener((changes, namespace) => {
+  const listener = (changes: { [key: string]: chrome.storage.StorageChange }, namespace: string) => {
     if (namespace === 'sync' && changes[SETTINGS_KEY]) {
       const newSettings = { ...DEFAULT_SETTINGS, ...changes[SETTINGS_KEY].newValue };
       callback(newSettings);
     }
-  });
-  return () => {};
+  };
+  chrome.storage.onChanged.addListener(listener);
+  return () => chrome.storage.onChanged.removeListener(listener);
 }

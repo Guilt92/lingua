@@ -150,7 +150,7 @@ export class TranslationManager {
       priority: number;
     }>
   ): Promise<void> {
-    const sorted = translations.sort((a, b) => a.priority - b.priority);
+    const sorted = [...translations].sort((a, b) => a.priority - b.priority);
     
     for (const t of sorted) {
       const unitId = this.createTranslationUnitId(t.pageNumber, t.textBlockId);
@@ -177,7 +177,6 @@ export class TranslationManager {
       
       const promise = this.executeTranslation(unitId, request, t.pageNumber, t.textBlockId);
       this.pendingTranslations.set(unitId, promise);
-      this.activeRequests++;
       
       if (this.activeRequests >= this.maxConcurrent) {
         await Promise.race(this.pendingTranslations.values());

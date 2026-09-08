@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { getCache, setCacheEntry } from '../storage/settings';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.js',
@@ -15,10 +16,15 @@ let currentScale = 1.5;
 let isTranslating = false;
 let translationMode = false;
 let renderedPages = new Map<number, HTMLElement>();
-let translationCache = new Map<string, string>();
+let translationCache = new Map<string, string>(); // in-memory cache (loaded from persistent)
 let pendingRequests = new Set<string>();
-let splitRatio = 50; // percent for PDF panel
+let splitRatio = 50;
 let isDragging = false;
+let translationGeneration = 0;
+let docUrl = '';
+let translatingPage: number | null = null; // which page is currently being translated
+const MAX_RETRIES = 5;
+const REQUEST_TIMEOUT = 45000;
 
 // ═══════════════════════════════════════════════
 // DOM
@@ -45,18 +51,49 @@ const prevPageBtn = $('prev-page') as HTMLButtonElement;
 const nextPageBtn = $('next-page') as HTMLButtonElement;
 
 const params = new URLSearchParams(window.location.search);
-const fileUrl = params.get('file');
+docUrl = params.get('file') || '';
 
-if (!fileUrl) {
+if (!docUrl) {
   showError('No PDF file specified.');
 } else {
-  loadPDF(fileUrl);
+  loadPDF(docUrl);
 }
 
 function showError(msg: string) {
   loadingEl.style.display = 'none';
   errorEl.style.display = 'flex';
   errorText.textContent = msg;
+}
+
+// ═══════════════════════════════════════════════
+// CACHE HELPERS — page-level caching
+// ═══════════════════════════════════════════════
+const BLOCK_MARKER = '===BLOCK_';
+const BLOCK_MARKER_END = '===';
+
+function makePageCacheKey(pg: number, provider: string, model: string): string {
+  // Simple, stable key: docUrl + page + provider + model
+  const str = `${docUrl}|${pg}|${provider}|${model}`;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return `page_${Math.abs(hash).toString(36)}`;
+}
+
+async function loadPersistentCache() {
+  const cache = await getCache();
+  for (const [key, entry] of Object.entries(cache)) {
+    if (entry.targetText) {
+      translationCache.set(key, entry.targetText);
+    }
+  }
+}
+
+async function saveToCache(key: string, text: string) {
+  translationCache.set(key, text);
+  await setCacheEntry(key, text);
 }
 
 // ═══════════════════════════════════════════════
@@ -78,6 +115,7 @@ async function loadPDF(url: string) {
     document.title = `${docTitle.textContent} - Lingua`;
     loadingEl.style.display = 'none';
 
+    await loadPersistentCache();
     updateNav();
     setupEvents();
     initSplitDrag();
@@ -116,13 +154,14 @@ function setupEvents() {
     searchPanel.classList.toggle('hidden');
     if (!searchPanel.classList.contains('hidden')) { searchInput.focus(); searchInput.select(); }
   };
-  $('close-search').onclick = () => { searchPanel.classList.add('hidden'); searchInput.value = ''; };
+  $('close-search').onclick = () => { searchPanel.classList.add('hidden'); searchInput.value = ''; searchResults = []; searchIdx = -1; searchInfo.textContent = ''; };
   $('search-prev').onclick = () => searchNav(-1);
   $('search-next').onclick = () => searchNav(1);
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchNav(e.shiftKey ? -1 : 1);
-    if (e.key === 'Escape') { searchPanel.classList.add('hidden'); searchInput.value = ''; }
+    if (e.key === 'Escape') { searchPanel.classList.add('hidden'); searchInput.value = ''; searchResults = []; searchIdx = -1; searchInfo.textContent = ''; }
   });
+  searchInput.addEventListener('input', () => { searchResults = []; searchIdx = -1; searchInfo.textContent = ''; });
 
   $('download').onclick = downloadPDF;
   $('print').onclick = () => window.print();
@@ -131,24 +170,31 @@ function setupEvents() {
     else document.exitFullscreen().catch(() => {});
   };
 
-  translateBtn.onclick = toggleTranslation;
-
-  // Scroll sync: PDF panel drives translation panel
-  let syncScrolling = false;
-  pdfPanel.addEventListener('scroll', () => {
-    if (!syncScrolling) {
-      syncScrolling = true;
-      transPanel.scrollTop = pdfPanel.scrollTop;
-      requestAnimationFrame(() => { syncScrolling = false; });
+  translateBtn.onclick = () => {
+    if (!translationMode) {
+      // Enable translation mode and show cached translations
+      toggleTranslation();
+    } else {
+      // Already in translation mode — translate the current page
+      translateCurrentPage();
     }
-    detectCurrentPage();
+  };
+
+  // Scroll sync: independent with cooldown guard
+  let pdfScrollTimer: ReturnType<typeof setTimeout> | null = null;
+  let transScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  pdfPanel.addEventListener('scroll', () => {
+    if (transScrollTimer) return; // translation panel is the source
+    syncScrollToSegment('pdf');
+    if (pdfScrollTimer) clearTimeout(pdfScrollTimer);
+    pdfScrollTimer = setTimeout(() => { pdfScrollTimer = null; }, 100);
   });
   transPanel.addEventListener('scroll', () => {
-    if (!syncScrolling) {
-      syncScrolling = true;
-      pdfPanel.scrollTop = transPanel.scrollTop;
-      requestAnimationFrame(() => { syncScrolling = false; });
-    }
+    if (pdfScrollTimer) return; // pdf panel is the source
+    syncScrollToSegment('trans');
+    if (transScrollTimer) clearTimeout(transScrollTimer);
+    transScrollTimer = setTimeout(() => { transScrollTimer = null; }, 100);
   });
 
   document.addEventListener('keydown', handleKey);
@@ -181,9 +227,7 @@ function fitWidth() {
   if (!pdfDoc) return;
   pdfDoc.getPage(currentPage).then((p: any) => {
     const vp = p.getViewport({ scale: 1 });
-    const availWidth = translationMode
-      ? (pdfPanel.clientWidth - 40)
-      : (pdfPanel.clientWidth - 40);
+    const availWidth = pdfPanel.clientWidth - 40;
     setZoom(availWidth / vp.width);
   });
 }
@@ -208,6 +252,9 @@ function goPage(p: number) {
   ensurePageRendered(p);
   const el = renderedPages.get(p);
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (translationMode) {
+    syncTransPanelToPage(p);
+  }
 }
 
 function detectCurrentPage() {
@@ -221,7 +268,13 @@ function detectCurrentPage() {
     if (d < bestDist) { bestDist = d; best = pg; }
   }
 
-  if (best !== currentPage) { currentPage = best; updateNav(); }
+  if (best !== currentPage) {
+    currentPage = best;
+    updateNav();
+    if (translationMode) {
+      syncTransPanelToPage(best);
+    }
+  }
 }
 
 function updateNav() {
@@ -230,10 +283,111 @@ function updateNav() {
   totalPagesEl.textContent = `/ ${totalPages}`;
   prevPageBtn.disabled = currentPage <= 1;
   nextPageBtn.disabled = currentPage >= totalPages;
+  // Update translate button text with current page number
+  if (translationMode && !isTranslating) {
+    translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page ${currentPage}`;
+  }
+}
+
+function syncTransPanelToPage(pg: number) {
+  const pageEl = transPages.querySelector(`[data-trans-page="${pg}"]`) as HTMLElement;
+  if (pageEl) {
+    const transRect = transPanel.getBoundingClientRect();
+    const elRect = pageEl.getBoundingClientRect();
+    const offset = elRect.top - transRect.top + transPanel.scrollTop - 20;
+    transPanel.scrollTo({ top: offset, behavior: 'smooth' });
+  }
 }
 
 // ═══════════════════════════════════════════════
-// PDF RENDERING (left panel)
+// SEMANTIC SCROLL SYNC
+// ═══════════════════════════════════════════════
+function syncScrollToSegment(source: 'pdf' | 'trans') {
+  if (!translationMode) return;
+
+  if (source === 'pdf') {
+    const pdfRect = pdfPanel.getBoundingClientRect();
+    const pdfCenter = pdfRect.top + pdfRect.height / 2;
+
+    let bestId: string | null = null;
+    let bestDist = Infinity;
+
+    for (const [pg, container] of renderedPages) {
+      const textContent = (container as any)._textContent;
+      const vp = (container as any)._viewport;
+      if (!textContent || !vp) continue;
+
+      const srcLines = buildBlocks(textContent, vp);
+      const srcBlocks = groupLinesToBlocks(srcLines, pg);
+
+      for (const block of srcBlocks) {
+        if (block.text.length < 3) continue;
+        const containerRect = container.getBoundingClientRect();
+        const blockCenterY = containerRect.top + (block.minY + block.maxY) / 2 * (containerRect.height / vp.height);
+        const dist = Math.abs(blockCenterY - pdfCenter);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestId = block.id;
+        }
+      }
+    }
+
+    if (bestId) {
+      const transEl = transPages.querySelector(`[data-segment-id="${bestId}"]`);
+      if (transEl) {
+        const transRect = transPanel.getBoundingClientRect();
+        const elRect = transEl.getBoundingClientRect();
+        const offset = elRect.top - transRect.top - transRect.height / 3;
+        transPanel.scrollBy({ top: offset, behavior: 'auto' });
+      }
+    }
+  } else {
+    const transRect = transPanel.getBoundingClientRect();
+    const visibleSegments = transPages.querySelectorAll('.tp-segment');
+    let bestEl: Element | null = null;
+    let bestDist = Infinity;
+
+    for (const el of visibleSegments) {
+      const r = el.getBoundingClientRect();
+      const center = r.top + r.height / 2;
+      const dist = Math.abs(center - (transRect.top + transRect.height / 2));
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestEl = el;
+      }
+    }
+
+    if (bestEl) {
+      const segId = bestEl.getAttribute('data-segment-id');
+      if (segId) {
+        const match = segId.match(/^p(\d+)-b(\d+)$/);
+        if (match) {
+          const pg = parseInt(match[1]);
+          const blockIdx = parseInt(match[2]);
+          const container = renderedPages.get(pg);
+          if (container) {
+            const textContent = (container as any)._textContent;
+            const vp = (container as any)._viewport;
+            if (textContent && vp) {
+              const srcLines = buildBlocks(textContent, vp);
+              const srcBlocks = groupLinesToBlocks(srcLines, pg);
+              if (srcBlocks[blockIdx]) {
+                const block = srcBlocks[blockIdx];
+                const containerRect = container.getBoundingClientRect();
+                const blockScreenY = containerRect.top + block.minY * (containerRect.height / vp.height);
+                const offset = blockScreenY - pdfPanel.getBoundingClientRect().top - pdfPanel.clientHeight / 3;
+                pdfPanel.scrollBy({ top: offset, behavior: 'auto' });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// PDF RENDERING (left panel) — NO auto-translation
 // ═══════════════════════════════════════════════
 async function ensurePageRendered(pg: number) {
   if (!renderedPages.has(pg)) await renderPage(pg);
@@ -264,7 +418,6 @@ async function renderPage(pg: number) {
   textLayer.className = 'text-layer';
   container.appendChild(textLayer);
 
-  // Insert in correct position
   const siblings = Array.from(pdfPages.children) as HTMLElement[];
   const after = siblings.find(el => parseInt(el.getAttribute('data-page-number') || '0') > pg);
   if (after) pdfPages.insertBefore(container, after);
@@ -291,20 +444,21 @@ async function renderPage(pg: number) {
 
   renderedPages.set(pg, container);
 
-  // Store metadata for translation
+  // Store metadata for translation (but DO NOT auto-translate)
   (container as any)._textContent = textContent;
   (container as any)._viewport = vp;
 
-  // If translation mode is on, build the translation panel for this page
+  // If translation mode is on, show cached translations only (no API calls)
   if (translationMode) {
-    await buildPageTranslation(pg, textContent, vp);
+    await showCachedPageTranslation(pg, textContent, vp);
   }
 }
 
 async function rerenderAll() {
   const prev = currentPage;
+  const wasTranslating = translationMode;
   pdfPages.innerHTML = '';
-  transPages.innerHTML = '';
+  if (!wasTranslating) transPages.innerHTML = '';
   renderedPages.clear();
 
   for (let i = Math.max(1, prev - 1); i <= Math.min(totalPages, prev + 2); i++) {
@@ -316,17 +470,18 @@ async function rerenderAll() {
 }
 
 // ═══════════════════════════════════════════════
-// TRANSLATION MODE
+// TRANSLATION MODE — only explicit user action
 // ═══════════════════════════════════════════════
 function toggleTranslation() {
   translationMode = !translationMode;
 
   if (translationMode) {
     translateBtn.classList.add('active');
-    translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translating...`;
-    translateBtn.disabled = true;
+    translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page ${currentPage}`;
+    translateBtn.disabled = false;
     applySplit();
-    translateCurrentPage();
+    // Show cached translations immediately (no API calls)
+    showCachedPageTranslation(currentPage, null, null).then(() => syncTransPanelToPage(currentPage));
   } else {
     translateBtn.classList.remove('active');
     translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page`;
@@ -335,6 +490,64 @@ function toggleTranslation() {
   }
 }
 
+// Show only cached translations (never calls API) — page-level cache
+async function showCachedPageTranslation(pg: number, textContentOverride: any, vpOverride: any) {
+  const container = renderedPages.get(pg);
+  if (!container) return;
+
+  const textContent = textContentOverride || (container as any)._textContent;
+  const vp = vpOverride || (container as any)._viewport;
+  if (!textContent || !vp) return;
+
+  const lines = buildBlocks(textContent, vp);
+  const blocks = groupLinesToBlocks(lines, pg);
+
+  // Remove old page element
+  const oldPageEl = transPages.querySelector(`[data-trans-page="${pg}"]`);
+  if (oldPageEl) oldPageEl.remove();
+
+  // Create page container
+  const pageEl = document.createElement('div');
+  pageEl.className = 'tp-page';
+  pageEl.setAttribute('data-trans-page', String(pg));
+  pageEl.style.height = vp.height + 'px';
+
+  const label = document.createElement('div');
+  label.className = 'tp-page-label';
+  label.textContent = `Page ${pg}`;
+  pageEl.appendChild(label);
+
+  // Insert in order
+  const existingPages = Array.from(transPages.querySelectorAll('.tp-page')) as HTMLElement[];
+  const afterPage = existingPages.find(el => parseInt(el.getAttribute('data-trans-page') || '0') > pg);
+  if (afterPage) transPages.insertBefore(pageEl, afterPage);
+  else transPages.appendChild(pageEl);
+
+  // Check page-level cache
+  const settings = await new Promise<any>(resolve => {
+    chrome.storage.sync.get('lingua_settings', resolve);
+  });
+  const apiKey = settings?.lingua_settings?.translation?.apiKey || '';
+  const model = settings?.lingua_settings?.translation?.model || '';
+  const provider = apiKey ? 'gemini' : '';
+
+  const cacheKey = makePageCacheKey(pg, provider, model);
+  const cached = translationCache.get(cacheKey);
+
+  if (cached) {
+    // Parse cached page translation and render
+    const translations = parsePageTranslations(cached, blocks.length);
+    renderTranslatedBlocks(pageEl, blocks, translations, vp);
+  } else {
+    // Nothing cached — show hint
+    const hint = document.createElement('div');
+    hint.className = 'tp-status';
+    hint.textContent = 'Click "Translate Page" to translate this page.';
+    pageEl.appendChild(hint);
+  }
+}
+
+// Explicit translate action — ONLY called from button click
 async function translateCurrentPage() {
   if (isTranslating || !pdfDoc || !translationMode) return;
 
@@ -345,16 +558,23 @@ async function translateCurrentPage() {
   const vp = (container as any)._viewport;
   if (!textContent || !vp) return;
 
+  translationGeneration++;
+  const gen = translationGeneration;
+  translatingPage = currentPage;
+
   isTranslating = true;
   translateBtn.disabled = true;
   translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translating page ${currentPage}...`;
 
   try {
-    await buildPageTranslation(currentPage, textContent, vp);
+    await translateEntirePage(currentPage, textContent, vp, gen);
   } finally {
-    isTranslating = false;
-    translateBtn.disabled = false;
-    translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page`;
+    if (gen === translationGeneration) {
+      isTranslating = false;
+      translatingPage = null;
+      translateBtn.disabled = false;
+      translateBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg> Translate Page ${currentPage}`;
+    }
   }
 }
 
@@ -371,6 +591,7 @@ interface TextLine {
 }
 
 interface TextBlock {
+  id: string;
   text: string;
   minX: number;
   minY: number;
@@ -425,11 +646,13 @@ function finalizeLine(line: { items: any[]; y: number; h: number }): TextLine {
   return { y: line.y, height: line.h, maxY, minX, maxX, text };
 }
 
-function groupLinesToBlocks(lines: TextLine[]): TextBlock[] {
+function groupLinesToBlocks(lines: TextLine[], pg: number): TextBlock[] {
   if (lines.length === 0) return [];
 
   const blocks: TextBlock[] = [];
+  let blockIdx = 0;
   let cur: TextBlock = {
+    id: `p${pg}-b${blockIdx}`,
     text: lines[0].text,
     minX: lines[0].minX,
     minY: lines[0].y,
@@ -445,7 +668,9 @@ function groupLinesToBlocks(lines: TextLine[]): TextBlock[] {
 
     if (gap > avgH * 1.3) {
       blocks.push(cur);
+      blockIdx++;
       cur = {
+        id: `p${pg}-b${blockIdx}`,
         text: line.text,
         minX: line.minX,
         minY: line.y,
@@ -466,17 +691,27 @@ function groupLinesToBlocks(lines: TextLine[]): TextBlock[] {
 }
 
 // ═══════════════════════════════════════════════
-// TRANSLATION PANEL (right side)
+// PAGE-LEVEL TRANSLATION — ONE request per page
 // ═══════════════════════════════════════════════
-async function buildPageTranslation(pg: number, textContent: any, vp: any) {
-  const lines = buildBlocks(textContent, vp);
-  const blocks = groupLinesToBlocks(lines);
+const MAX_BLOCKS_PER_REQUEST = 50; // intelligent batching threshold
 
-  // Remove old page element if exists
+async function translateEntirePage(pg: number, textContent: any, vp: any, generation: number) {
+  const lines = buildBlocks(textContent, vp);
+  const blocks = groupLinesToBlocks(lines, pg);
+
+  // Filter to translatable blocks (skip very short ones)
+  const translatableBlocks = blocks.filter(b => b.text.length >= 3);
+
+  if (translatableBlocks.length === 0) {
+    showTransStatus(pg, 'error', 'No translatable text found on this page.');
+    return;
+  }
+
+  // Remove old page element
   const oldPageEl = transPages.querySelector(`[data-trans-page="${pg}"]`);
   if (oldPageEl) oldPageEl.remove();
 
-  // Create page container in translation panel
+  // Create page container
   const pageEl = document.createElement('div');
   pageEl.className = 'tp-page';
   pageEl.setAttribute('data-trans-page', String(pg));
@@ -493,119 +728,280 @@ async function buildPageTranslation(pg: number, textContent: any, vp: any) {
   if (afterPage) transPages.insertBefore(pageEl, afterPage);
   else transPages.appendChild(pageEl);
 
-  // Translate each block and create elements
+  // Get provider config
+  const settings = await new Promise<any>(resolve => {
+    chrome.storage.sync.get('lingua_settings', resolve);
+  });
+  const apiKey = settings?.lingua_settings?.translation?.apiKey || '';
+  const model = settings?.lingua_settings?.translation?.model || '';
+  const provider = apiKey ? 'gemini' : '';
+
+  // Check page-level cache first
+  const cacheKey = makePageCacheKey(pg, provider, model);
+  const cached = translationCache.get(cacheKey);
+
+  let allTranslations: string[] | null = null;
+
+  if (cached) {
+    // Cache hit — parse and render immediately
+    allTranslations = parsePageTranslations(cached, translatableBlocks.length);
+  } else {
+    // Cache miss — translate entire page in ONE request (or batched if oversized)
+    allTranslations = await translatePageInBatches(
+      translatableBlocks, pg, provider, model, generation
+    );
+    if (generation !== translationGeneration) return;
+
+    if (allTranslations) {
+      // Save complete page translation to cache
+      const serialized = allTranslations.join('\n===BLOCK_SEP===\n');
+      await saveToCache(cacheKey, serialized);
+    } else {
+      // Translation failed
+      showTransStatus(pg, 'error', 'Translation failed. Check your API key and connection.');
+      return;
+    }
+  }
+
+  // Render all translated blocks
+  renderTranslatedBlocks(pageEl, translatableBlocks, allTranslations, vp);
+  clearTransPanelStatus(pg);
+}
+
+// Translate page in ONE request, or batch if oversized
+async function translatePageInBatches(
+  blocks: TextBlock[], pg: number, provider: string, model: string, generation: number
+): Promise<string[] | null> {
+  if (blocks.length <= MAX_BLOCKS_PER_REQUEST) {
+    // Normal case: ONE request for the entire page
+    return translatePageBatch(blocks, pg, provider, model, generation);
+  }
+
+  // Oversized page: split into batches
+  const allTranslations: string[] = [];
+  const batches = Math.ceil(blocks.length / MAX_BLOCKS_PER_REQUEST);
+
+  for (let b = 0; b < batches; b++) {
+    if (generation !== translationGeneration) return null;
+
+    const start = b * MAX_BLOCKS_PER_REQUEST;
+    const end = Math.min(start + MAX_BLOCKS_PER_REQUEST, blocks.length);
+    const batch = blocks.slice(start, end);
+
+    showTransStatus(pg, 'retrying', `Translating batch ${b + 1}/${batches}...`);
+
+    const batchResult = await translatePageBatch(batch, pg, provider, model, generation);
+    if (!batchResult) return null;
+
+    allTranslations.push(...batchResult);
+  }
+
+  return allTranslations;
+}
+
+// Translate a batch of blocks in ONE API request
+async function translatePageBatch(
+  blocks: TextBlock[], pg: number, provider: string, model: string, generation: number
+): Promise<string[] | null> {
+  const requestKey = `page_batch_${pg}_${blocks.length}`;
+
+  if (pendingRequests.has(requestKey)) return null;
+  pendingRequests.add(requestKey);
+
+  try {
+    // Build the single request containing all blocks
+    const prompt = buildPagePrompt(blocks);
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (generation !== translationGeneration) return null;
+
+      try {
+        const rawResponse = await callTranslationAPI(prompt, generation);
+        if (generation !== translationGeneration) return null;
+
+        // Parse the response to extract individual block translations
+        const translations = parsePageResponse(rawResponse, blocks.length);
+        pendingRequests.delete(requestKey);
+        return translations;
+      } catch (err: any) {
+        const msg = err.message || 'Unknown error';
+        const status = extractStatus(msg);
+
+        if (status === 401 || status === 403) {
+          pendingRequests.delete(requestKey);
+          showTransStatus(pg, 'error', `Authentication failed (${status}). Check your API key.`);
+          return null;
+        }
+        if (status === 400) {
+          pendingRequests.delete(requestKey);
+          showTransStatus(pg, 'error', 'Invalid request. The text may be too long or malformed.');
+          return null;
+        }
+
+        if (attempt >= MAX_RETRIES) {
+          pendingRequests.delete(requestKey);
+          const label = status ? `HTTP ${status}` : 'Network error';
+          showTransStatus(pg, 'error', `Translation failed after ${MAX_RETRIES + 1} attempts. ${label}`);
+          return null;
+        }
+
+        const retryAfter = extractRetryAfter(msg);
+        const backoff = 1000 * Math.pow(2, attempt);
+        const jitter = Math.random() * 1000;
+        const delay = retryAfter || (backoff + jitter);
+
+        const delaySec = Math.round(delay / 1000);
+        const retryLabel = status === 429 ? 'Rate limited' : status === 503 ? 'Service unavailable' : 'Request failed';
+        showTransStatus(pg, 'retrying', `${retryLabel}. Retrying in ${delaySec}s...`);
+        await sleep(delay);
+      }
+    }
+
+    pendingRequests.delete(requestKey);
+    return null;
+  } catch {
+    pendingRequests.delete(requestKey);
+    return null;
+  }
+}
+
+// Build a single prompt for the entire page
+function buildPagePrompt(blocks: TextBlock[]): string {
+  const blockTexts = blocks.map((block, i) => `[BLOCK_${i}]\n${block.text}`).join('\n\n');
+
+  return `You are a professional English to Persian (Farsi) translator specializing in technical documentation.
+
+Translate the following text blocks from English to Persian. Each block is marked with [BLOCK_N] where N is the block number.
+
+CRITICAL RULES:
+1. Preserve ALL [BLOCK_N] markers EXACTLY as they appear — they are used for parsing
+2. Return the translated text for each block in the same order
+3. Separate each block translation with a blank line
+4. Do NOT merge blocks or split blocks — keep the 1:1 correspondence
+5. Preserve technical terms (Kubernetes, Docker, API, Linux, etc.) in English
+6. Preserve code, URLs, file paths, numbers, and commands exactly
+7. Use proper Persian punctuation (، ؛ ؟) for Persian text
+8. Preserve paragraph structure within each block
+
+Text blocks to translate:
+
+${blockTexts}
+
+Return ONLY the translated blocks with their markers, no explanations.`;
+}
+
+// Parse the API response to extract individual block translations
+function parsePageResponse(response: string, expectedCount: number): string[] {
+  const translations: string[] = [];
+
+  // Split by block markers
+  const parts = response.split(/\[BLOCK_\d+\]/);
+
+  // First part is usually empty (before first marker) or contains preamble
+  for (let i = 0; i < parts.length; i++) {
+    const trimmed = parts[i].trim();
+    // Skip empty parts or preamble text before first block
+    if (trimmed.length === 0) continue;
+    // If this looks like preamble text (no block marker before it), skip it
+    if (translations.length === 0 && !response.includes(`[BLOCK_${translations.length}]`)) {
+      continue;
+    }
+    translations.push(trimmed);
+  }
+
+  // Fallback: if marker parsing didn't work, try splitting by double newlines
+  if (translations.length !== expectedCount) {
+    const fallback = response.split(/\n\s*\n/).map(s => s.trim()).filter(s => s.length > 0);
+    if (fallback.length === expectedCount) {
+      return fallback;
+    }
+
+    // Last fallback: if we got exactly the right number from marker parsing, use it
+    if (translations.length === expectedCount) {
+      return translations;
+    }
+
+    // Pad with empty strings if we got fewer, or truncate if we got more
+    while (translations.length < expectedCount) {
+      translations.push('');
+    }
+    return translations.slice(0, expectedCount);
+  }
+
+  return translations;
+}
+
+// Parse cached page translations
+function parsePageTranslations(cached: string, expectedCount: number): string[] {
+  const parts = cached.split('\n===BLOCK_SEP===\n');
+  if (parts.length === expectedCount) return parts;
+
+  // Mismatch — pad or truncate
+  while (parts.length < expectedCount) parts.push('');
+  return parts.slice(0, expectedCount);
+}
+
+// Render translated blocks into the page element
+function renderTranslatedBlocks(pageEl: HTMLElement, blocks: TextBlock[], translations: string[], vp: any) {
   const GAP = 8;
   let cursorY = 0;
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
-    if (block.text.length < 3) continue;
+    const text = translations[i];
 
-    const cacheKey = `${pg}_${i}`;
-    let text = translationCache.get(cacheKey);
+    if (!text || text.length === 0) continue;
 
-    if (!text) {
-      const result = await translateWithRetry(block.text, cacheKey);
-      if (result) {
-        text = result;
-        translationCache.set(cacheKey, text);
-      }
-    }
+    const top = Math.max(block.maxY + GAP, cursorY);
 
-    if (text && text.length > 0) {
-      // Position the translation block at the same Y as the English source
-      const top = Math.max(block.maxY + GAP, cursorY);
+    const blockEl = document.createElement('div');
+    blockEl.className = 'tp-segment';
+    blockEl.setAttribute('data-segment-id', block.id);
+    blockEl.style.top = top + 'px';
 
-      const blockEl = document.createElement('div');
-      blockEl.className = 'tp-block';
-      blockEl.style.top = top + 'px';
+    const faEl = document.createElement('div');
+    faEl.className = 'tp-fa';
+    faEl.textContent = text;
+    blockEl.appendChild(faEl);
 
-      const faEl = document.createElement('div');
-      faEl.className = 'tp-fa';
-      faEl.textContent = text;
-      blockEl.appendChild(faEl);
+    blockEl.addEventListener('click', () => highlightSegment(block.id));
+    pageEl.appendChild(blockEl);
 
-      pageEl.appendChild(blockEl);
-
-      // Measure height after append
-      const renderedHeight = faEl.getBoundingClientRect().height;
-      const cssHeight = renderedHeight * (vp.height / pageEl.getBoundingClientRect().height);
-
-      cursorY = top + cssHeight + GAP;
-    }
+    const renderedHeight = faEl.getBoundingClientRect().height;
+    const cssHeight = renderedHeight * (vp.height / pageEl.getBoundingClientRect().height);
+    cursorY = top + cssHeight + GAP;
   }
 }
 
-// ═══════════════════════════════════════════════
-// TRANSLATION HTTP WITH RETRY
-// ═══════════════════════════════════════════════
-const MAX_RETRIES = 5;
-const REQUEST_TIMEOUT = 30000;
+function showTransStatus(pg: number, status: 'retrying' | 'error' | 'success', msg: string) {
+  const pageEl = transPages.querySelector(`[data-trans-page="${pg}"]`);
+  if (!pageEl) return;
 
-async function translateWithRetry(text: string, cacheKey: string): Promise<string | null> {
-  if (pendingRequests.has(cacheKey)) return null;
-  pendingRequests.add(cacheKey);
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const result = await translateSingle(text);
-      pendingRequests.delete(cacheKey);
-      return result;
-    } catch (err: any) {
-      const msg = err.message || 'Unknown error';
-      const status = extractStatus(msg);
-
-      console.warn(`[Lingua] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${msg}`);
-
-      if (status === 401 || status === 403) {
-        console.error(`[Lingua] Auth error (${status}). Not retrying.`);
-        pendingRequests.delete(cacheKey);
-        return null;
-      }
-      if (status === 400) {
-        console.error(`[Lingua] Bad request (400). Not retrying.`);
-        pendingRequests.delete(cacheKey);
-        return null;
-      }
-
-      if (attempt >= MAX_RETRIES) {
-        console.error(`[Lingua] All ${MAX_RETRIES + 1} attempts exhausted.`);
-        pendingRequests.delete(cacheKey);
-        return null;
-      }
-
-      const retryAfter = extractRetryAfter(msg);
-      const backoff = 1000 * Math.pow(2, attempt);
-      const jitter = Math.random() * 1000;
-      const delay = retryAfter || (backoff + jitter);
-
-      console.log(`[Lingua] Retrying in ${Math.round(delay)}ms...`);
-      await sleep(delay);
-    }
+  let el = pageEl.querySelector('.tp-status-line') as HTMLElement;
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'tp-status-line';
+    pageEl.appendChild(el);
   }
 
-  pendingRequests.delete(cacheKey);
-  return null;
+  if (status === 'success') {
+    el.remove();
+    return;
+  }
+
+  el.textContent = msg;
+  el.className = `tp-status-line tp-status-${status}`;
 }
 
-function extractStatus(errMsg: string): number | null {
-  const match = errMsg.match(/^HTTP (\d+)/);
-  return match ? parseInt(match[1]) : null;
+function clearTransPanelStatus(pg: number) {
+  const pageEl = transPages.querySelector(`[data-trans-page="${pg}"]`);
+  if (!pageEl) return;
+  const el = pageEl.querySelector('.tp-status-line');
+  if (el) el.remove();
 }
 
-function extractRetryAfter(errMsg: string): number | null {
-  // Check Retry-After header format: "Retry-After: 30"
-  const headerMatch = errMsg.match(/Retry-After:\s*(\d+)/i);
-  if (headerMatch) return parseInt(headerMatch[1]) * 1000;
-
-  // Check Gemini API retryDelay format: "(retryDelay: 34s)" or "(retryDelay: 34)"
-  const delayMatch = errMsg.match(/retryDelay:\s*(\d+)s?/i);
-  if (delayMatch) return parseInt(delayMatch[1]) * 1000;
-
-  return null;
-}
-
-async function translateSingle(text: string): Promise<string> {
+// Call the translation API with a prompt
+async function callTranslationAPI(prompt: string, generation: number): Promise<string> {
   const settings = await new Promise<any>(resolve => {
     chrome.storage.sync.get('lingua_settings', resolve);
   });
@@ -614,14 +1010,6 @@ async function translateSingle(text: string): Promise<string> {
   const model = settings?.lingua_settings?.translation?.model;
 
   if (!apiKey || !model) throw new Error('API key not configured');
-
-  const prompt = `Translate this English text to Persian. Return ONLY the translation, no explanations.
-
-Technical terms, code, URLs, file paths, and numbers must remain in their original form.
-Preserve paragraph structure.
-
-Text to translate:
-${text}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
@@ -643,7 +1031,6 @@ ${text}`;
     const retryAfterHeader = resp.headers.get('Retry-After');
 
     if (!resp.ok) {
-      // Try to parse Gemini API JSON error body for retryDelay
       let retryDelay: string | null = null;
       let errorMessage = resp.statusText;
       try {
@@ -652,12 +1039,11 @@ ${text}`;
         retryDelay = errJson?.error?.details?.find(
           (d: any) => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo'
         )?.retryDelay || null;
-        // Also check top-level retryDelay
         if (!retryDelay && errJson?.error?.retryDelay) {
           retryDelay = errJson.error.retryDelay;
         }
       } catch {
-        // Body wasn't JSON, use statusText
+        // Body wasn't JSON
       }
 
       let errMsg = `HTTP ${resp.status}: ${errorMessage}`;
@@ -672,12 +1058,82 @@ ${text}`;
     return result;
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      throw new Error(`Request timed out after ${REQUEST_TIMEOUT / 1000}s`);
+      throw new Error(`Request timed out after ${Math.round(REQUEST_TIMEOUT / 1000)}s`);
     }
     throw err;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// ═══════════════════════════════════════════════
+// SEGMENT HIGHLIGHTING
+// ═══════════════════════════════════════════════
+let activeSegmentId: string | null = null;
+let highlightTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function highlightSegment(segmentId: string) {
+  if (highlightTimeout) clearTimeout(highlightTimeout);
+  clearHighlights();
+
+  activeSegmentId = segmentId;
+
+  const transEl = transPages.querySelector(`[data-segment-id="${segmentId}"]`);
+  if (transEl) {
+    transEl.classList.add('segment-active');
+  }
+
+  const match = segmentId.match(/^p(\d+)-b(\d+)$/);
+  if (match) {
+    const pg = parseInt(match[1]);
+    const blockIdx = parseInt(match[2]);
+    const container = renderedPages.get(pg);
+    if (container) {
+      const textContent = (container as any)._textContent;
+      const vp = (container as any)._viewport;
+      if (textContent && vp) {
+        const srcLines = buildBlocks(textContent, vp);
+        const srcBlocks = groupLinesToBlocks(srcLines, pg);
+        if (srcBlocks[blockIdx]) {
+          const srcBlock = srcBlocks[blockIdx];
+          const highlight = document.createElement('div');
+          highlight.className = 'src-highlight';
+          highlight.setAttribute('data-highlight-for', segmentId);
+          highlight.style.left = srcBlock.minX + 'px';
+          highlight.style.top = srcBlock.minY + 'px';
+          highlight.style.width = (srcBlock.maxX - srcBlock.minX) + 'px';
+          highlight.style.height = (srcBlock.maxY - srcBlock.minY) + 'px';
+          container.appendChild(highlight);
+        }
+      }
+    }
+  }
+
+  highlightTimeout = setTimeout(clearHighlights, 2000);
+}
+
+function clearHighlights() {
+  activeSegmentId = null;
+  document.querySelectorAll('.segment-active').forEach(el => el.classList.remove('segment-active'));
+  document.querySelectorAll('.src-highlight').forEach(el => el.remove());
+}
+
+// ═══════════════════════════════════════════════
+// TRANSLATION HTTP HELPERS
+
+function extractStatus(errMsg: string): number | null {
+  const match = errMsg.match(/^HTTP (\d+)/);
+  return match ? parseInt(match[1]) : null;
+}
+
+function extractRetryAfter(errMsg: string): number | null {
+  const headerMatch = errMsg.match(/Retry-After:\s*(\d+)/i);
+  if (headerMatch) return parseInt(headerMatch[1]) * 1000;
+
+  const delayMatch = errMsg.match(/retryDelay:\s*(\d+)s?/i);
+  if (delayMatch) return parseInt(delayMatch[1]) * 1000;
+
+  return null;
 }
 
 // ═══════════════════════════════════════════════
@@ -712,9 +1168,9 @@ async function searchNav(dir: number) {
 // DOWNLOAD
 // ═══════════════════════════════════════════════
 function downloadPDF() {
-  if (!fileUrl) return;
+  if (!docUrl) return;
   const a = document.createElement('a');
-  a.href = fileUrl;
+  a.href = docUrl;
   a.download = docTitle.textContent || 'document.pdf';
   a.click();
 }
@@ -722,12 +1178,11 @@ function downloadPDF() {
 // ═══════════════════════════════════════════════
 // SPLIT RESIZE
 // ═══════════════════════════════════════════════
-const MIN_SPLIT = 25; // minimum % for either panel
+const MIN_SPLIT = 25;
 const MAX_SPLIT = 75;
 
 function applySplit() {
   if (!translationMode) {
-    // PDF takes full width
     pdfPanel.style.flex = '1 1 0%';
     dividerEl.style.display = 'none';
     transPanel.style.flex = '0 0 0px';
@@ -782,6 +1237,12 @@ function initSplitDrag() {
   }
 
   dividerEl.addEventListener('mousedown', onMouseDown);
+
+  dividerEl.addEventListener('dblclick', () => {
+    splitRatio = 50;
+    applySplit();
+    saveSplitRatio();
+  });
 
   // Touch support
   dividerEl.addEventListener('touchstart', (e: TouchEvent) => {
