@@ -216,7 +216,7 @@ function Popup() {
       </button>
 
       <div className="footer">
-        <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/Guilt92" target="_blank" rel="noopener noreferrer">GitHub</a>
         <span className="separator">·</span>
         <a href="#" onClick={(e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); window.close(); }}>
           Privacy
